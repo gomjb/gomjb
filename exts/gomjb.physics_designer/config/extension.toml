@@ -1,0 +1,23 @@
+[package]
+version = "0.1.0"
+title = "Physics Designer"
+description = "Python designer for Isaac Sim physics models: object move/align, snapping, anchors, joint creation, physics properties, mechanism templates and setup validation - all undoable."
+category = "Simulation"
+keywords = ["isaac", "physics", "joint", "snap", "designer", "assembly", "mechanism"]
+authors = ["gomjb"]
+readme = "docs/README.md"
+changelog = "docs/CHANGELOG.md"
+
+[dependencies]
+"omni.kit.uiapp" = {}
+"omni.ui" = {}
+"omni.usd" = {}
+"omni.kit.commands" = {}
+"omni.kit.menu.utils" = {}
+
+[[python.module]]
+name = "gomjb.physics_designer"
+
+[[test]]
+dependencies = ["omni.kit.test"]
+args = ["--/app/window/dpiScaleOverride=1.0", "--no-window"]
