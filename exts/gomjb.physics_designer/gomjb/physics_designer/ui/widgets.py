@@ -224,6 +224,10 @@ class UnitVec3(Vec3Input, _UnitField):
         self._setup(units, label, quantity, step)
         self.value = tuple(self._from_si(v) for v in value_si)
 
+    @property
+    def si(self):
+        return tuple(self._to_si(v) for v in self.value)
+
     def core(self, stage: Usd.Stage):
         return tuple(un.to_core(v, self._units.system, self.quantity, stage) for v in self.value)
 

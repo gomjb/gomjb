@@ -10,6 +10,9 @@
 - Template parameters carry unit annotations (`Length`, `Mass`, `LinearStiffness`, ...).
 
 ### Changed
+- Template builders take SI (m, kg, N/m, N*m*s/deg, ...) and convert every length, joint limit and
+  drive value to the stage's units, fixed internal sizes included: a template has the same size
+  on a metre, centimetre or millimetre stage (`joints.spec_from_si` converts a joint spec).
 - `physics.set_mass` takes kg and kg/m^3 and authors them in stage units (it wrote the raw value).
 - Exact-solver results stay SI in the recording; plot, summary and CSV show the unit system.
 - `Recording.x_name` / `x_unit` replace the `x_label` field (`x_label` is now derived).

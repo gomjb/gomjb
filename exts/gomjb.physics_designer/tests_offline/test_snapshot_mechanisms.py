@@ -85,16 +85,17 @@ def test_scissor_actuator_force_matches_built_model(stages, sides, angle):
     L, dth = 1.2, 1e-4
 
     def potential(theta):
-        s = Usd.Stage.CreateInMemory()
+        s = Usd.Stage.CreateInMemory()  # no metersPerUnit: USD's default centimetres; the builder takes metres
         UsdGeom.SetStageUpAxis(s, UsdGeom.Tokens.z)
         res = me.build_scissor_lift(s, stages=stages, sides=sides, angle=theta, arm_length=L)
+        mpu = UsdGeom.GetStageMetersPerUnit(s)
         v = 0.0
         for p in res["bodies"]:
             if p.endswith("/Base"):
                 continue
             prim = s.GetPrimAtPath(p)
             props = md.body_mass_properties(prim)
-            v += props.mass * 9.81 * tf.world_matrix(prim).Transform(props.com)[2]
+            v += props.mass * 9.81 * tf.world_matrix(prim).Transform(props.com)[2] * mpu
         return v
 
     dv = potential(angle + dth) - potential(angle)

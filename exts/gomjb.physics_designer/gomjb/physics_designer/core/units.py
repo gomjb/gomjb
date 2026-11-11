@@ -6,8 +6,9 @@ always seconds and angles degrees. It does not touch the stage: USD keeps its ow
 Like those tools the systems need not be coherent (MMKS = mm, kg, N, s).
 
 Quantities are products of length, mass and force powers, so one table gives each unit
-label and its factors. The core API takes masses and densities in SI (kg, kg/m^3) and
-everything else in stage units; :func:`to_core` / :func:`from_core` follow that convention.
+label and its factors. The authoring API (transform, snapping, joints, modeling geometry) takes
+masses and densities in SI (kg, kg/m^3) and everything else in stage units; :func:`to_core` /
+:func:`from_core` follow that convention. Template builders and the exact solver take SI.
 """
 from __future__ import annotations
 

@@ -602,7 +602,7 @@ class PhysicsDesignerWindow(ui.Window):
         def op(stage, prims):
             kwargs = {}
             for name, (kind, widget) in self._template_inputs.items():
-                v = widget.core(stage) if isinstance(widget, (UnitFloat, UnitVec3)) else widget.value
+                v = widget.si if isinstance(widget, (UnitFloat, UnitVec3)) else widget.value  # builders take SI
                 if kind == "vec2":
                     v = tuple(v[:2])
                 elif kind == "optional":

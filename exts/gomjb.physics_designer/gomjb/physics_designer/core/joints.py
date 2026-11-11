@@ -7,13 +7,14 @@ when simulation starts).
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Dict, List, Optional, Tuple, Union
 
 from pxr import Gf, Sdf, Usd, UsdPhysics
 
 from . import math_utils as mu
 from . import transform as tf
+from . import units as un
 from .stage_utils import default_root, ensure_scope, unique_child_path
 
 JOINT_TYPES = ("fixed", "revolute", "prismatic", "spherical", "distance", "d6")
@@ -62,6 +63,41 @@ class JointSpec:
     # d6: dof -> "free" | "locked" | (low, high); drives per dof
     d6: Dict[str, Union[str, Tuple[float, float]]] = field(default_factory=dict)
     d6_drives: Dict[str, DriveSpec] = field(default_factory=dict)
+
+
+def _from_si(stage: Usd.Stage, value: Optional[float], quantity: str) -> Optional[float]:
+    return None if value is None else value / un.si_per_stage_unit(stage, quantity)
+
+
+def _drive_from_si(stage: Usd.Stage, drive: DriveSpec, linear: bool) -> DriveSpec:
+    def q(lin: str, ang: str) -> str:
+        return lin if linear else ang
+
+    return replace(drive,
+                   stiffness=_from_si(stage, drive.stiffness, q("linear_stiffness", "angular_stiffness")),
+                   damping=_from_si(stage, drive.damping, q("linear_damping", "angular_damping")),
+                   max_force=_from_si(stage, drive.max_force, q("force", "torque")),
+                   target_position=_from_si(stage, drive.target_position, q("length", "angle")),
+                   target_velocity=_from_si(stage, drive.target_velocity, q("velocity", "angular_velocity")))
+
+
+def spec_from_si(spec: JointSpec, stage: Usd.Stage) -> JointSpec:
+    """Copy of ``spec`` written in SI (m, N, N*m, N/m, N*m/deg, ...; angles in deg) in the stage's
+    units (metersPerUnit / kilogramsPerUnit), which is how :func:`create_joint` takes it."""
+    linear = spec.joint_type == "prismatic"
+    limit = "length" if linear else "angle"
+    return replace(
+        spec,
+        lower=_from_si(stage, spec.lower, limit), upper=_from_si(stage, spec.upper, limit),
+        drive=_drive_from_si(stage, spec.drive, linear) if spec.drive else None,
+        break_force=_from_si(stage, spec.break_force, "force"),
+        break_torque=_from_si(stage, spec.break_torque, "torque"),
+        min_distance=_from_si(stage, spec.min_distance, "length"),
+        max_distance=_from_si(stage, spec.max_distance, "length"),
+        d6={dof: lim if isinstance(lim, str) else tuple(
+            _from_si(stage, v, "length" if dof.startswith("trans") else "angle") for v in lim)
+            for dof, lim in spec.d6.items()},
+        d6_drives={dof: _drive_from_si(stage, d, dof.startswith("trans")) for dof, d in spec.d6_drives.items()})
 
 
 # ---------------------------------------------------------------------------------------

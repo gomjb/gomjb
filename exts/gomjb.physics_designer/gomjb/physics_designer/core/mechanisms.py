@@ -10,8 +10,9 @@ Each mechanism is one fixed-base articulation, the convention of Isaac Sim robot
 PhysX solves it with exact reduced-coordinate joints and Newton only accepts joints that
 belong to an articulation.  Loop-closing joints are ``excludeFromArticulation``.
 
-Dimensions and drive parameters are in stage units (Isaac Sim default: meters), masses in kg,
-angles in degrees; parameter annotations (:mod:`units`) name each quantity for the window.
+Parameters are SI (m, kg, N, N/m, N*m*s/deg, ...) with angles in degrees, whatever the stage's
+scale: the builder converts every length, joint limit and drive value, fixed internal sizes
+included. Parameter annotations (:mod:`units`) name each quantity for the window.
 Layouts are authored Z-up in the root's local frame (the root is rotated for Y-up stages).
 """
 from __future__ import annotations
@@ -27,7 +28,7 @@ from . import modeling as md
 from . import physics as ph
 from . import transform as tf
 from .snapping import create_anchor
-from .stage_utils import default_root, stage_up_axis, unique_child_path
+from .stage_utils import default_root, si_factors, stage_up_axis, unique_child_path
 from .units import Angle, AngularDamping, Force, Length, Lengths, LinearDamping, LinearStiffness, Mass
 
 STEEL = Gf.Vec3f(0.62, 0.64, 0.68)
@@ -37,11 +38,15 @@ DARK = Gf.Vec3f(0.25, 0.25, 0.28)
 
 
 class _Builder:
-    """Shared plumbing: root frame, bodies and joints expressed in root-local coordinates."""
+    """Shared plumbing: root frame, bodies and joints expressed in root-local coordinates.
+
+    Builders work in SI (m, kg, N/m, N*m/deg, ...); every length, joint limit and drive value
+    is converted to the stage's units here, so a template has the same size on any stage."""
 
     def __init__(self, stage: Usd.Stage, name: str, origin, parent: Optional[Sdf.Path] = None,
                  direction: Optional[mu.VecLike] = None):
         self.stage = stage
+        self.k = 1.0 / si_factors(stage)["length"]  # metres -> stage units
         parent = Sdf.Path(str(parent)) if parent else default_root(stage)
         self.root_path = unique_child_path(stage, parent, name)
         root = UsdGeom.Xform.Define(stage, self.root_path).GetPrim()
@@ -50,12 +55,16 @@ class _Builder:
             rot = Gf.Rotation(Gf.Vec3d(1, 0, 0), -90.0)  # local Z-up -> world Y-up
         if direction is not None:
             rot = mu.rotation_from_to((0, 0, 1), direction)
-        tf.set_world_matrix(root, mu.make_transform(origin, rot))
+        tf.set_world_matrix(root, mu.make_transform(self.len(origin), rot))
         ph.apply_articulation_root(root)
         self.root = root
         self.result: Dict[str, List[str]] = {"root": [str(self.root_path)], "bodies": [], "joints": [], "anchors": []}
 
     # -- frames -----------------------------------------------------------------------
+    def len(self, v):
+        """Metres (a number or a tuple of them) -> stage units."""
+        return tuple(self.k * float(c) for c in v) if isinstance(v, (tuple, list, Gf.Vec3d)) else self.k * float(v)
+
     @property
     def root_world(self) -> Gf.Matrix4d:
         return tf.world_matrix(self.root)
@@ -75,22 +84,23 @@ class _Builder:
         ``geom_offset`` shifts the shape inside the body so the body origin can sit on a pivot.
         """
         path = unique_child_path(self.stage, self.root_path, name)
-        prim = md.create_body(self.stage, path, shape, dims, mass=mass, collision=collider, color=color,
-                              offset=geom_offset)
-        tf.set_local_matrix(prim, mu.make_transform(pos, rot))
+        prim = md.create_body(self.stage, path, shape, self.len(dims), mass=mass, collision=collider, color=color,
+                              offset=self.len(geom_offset))
+        tf.set_local_matrix(prim, mu.make_transform(self.len(pos), rot))
         self.result["bodies"].append(str(path))
         return prim
 
     # -- joints ------------------------------------------------------------------------
     def joint(self, spec: jt.JointSpec, b0: Optional[Usd.Prim], b1: Optional[Usd.Prim], local_pos,
               local_rot=None) -> Usd.Prim:
-        j = jt.create_joint(self.stage, spec, b0, b1, self.wpos(local_pos), self.wrot(local_rot),
-                            parent_path=self.root_path.AppendChild("Joints"))
+        """``spec`` in SI (see :func:`joints.spec_from_si`), ``local_pos`` in metres."""
+        j = jt.create_joint(self.stage, jt.spec_from_si(spec, self.stage), b0, b1, self.wpos(self.len(local_pos)),
+                            self.wrot(local_rot), parent_path=self.root_path.AppendChild("Joints"))
         self.result["joints"].append(str(j.GetPath()))
         return j
 
     def anchor(self, parent: Usd.Prim, name: str, local_pos, local_rot=None, kind="mount") -> Usd.Prim:
-        a = create_anchor(self.stage, parent, name, self.wpos(local_pos), self.wrot(local_rot), kind=kind)
+        a = create_anchor(self.stage, parent, name, self.wpos(self.len(local_pos)), self.wrot(local_rot), kind=kind)
         self.result["anchors"].append(str(a.GetPath()))
         return a
 
@@ -212,8 +222,8 @@ def build_scissor_lift(stage: Usd.Stage, name: str = "ScissorLift", origin: Leng
     articulation (exact reduced-coordinate joints, actuator in the tree) and only the
     loop-closing joints are ``excludeFromArticulation`` — the standard PhysX pattern for loops.
     The actuator drive is sized from the lifted weight: stiffness keeps the static platform
-    sag under ``sag_tolerance`` (stage units) and damping is critical for the lifted mass
-    reflected onto the slider.
+    sag under ``sag_tolerance`` (m) and damping is critical for the lifted mass reflected onto
+    the slider.
     """
     if stages < 1:
         raise ValueError("stages must be >= 1")
@@ -245,10 +255,10 @@ def build_scissor_lift(stage: Usd.Stage, name: str = "ScissorLift", origin: Leng
     lower = scissor_slider_offset(L, angle, 75.0)
     upper = scissor_slider_offset(L, angle, 4.0)
 
-    # actuator drive sized from the static load and the scissor's motion ratio
+    # actuator drive sized from the static load and the scissor's motion ratio (SI: N, N/m, N*s/m)
     n_sides = len(side_list)
     ratio = stages / math.tan(th)  # platform rise per unit of slider travel
-    gravity = 9.81 / float(UsdGeom.GetStageMetersPerUnit(stage) or 1.0)
+    gravity = 9.81
     load = scissor_actuator_force(L, angle, stages, platform_mass, arm_mass, SCISSOR_SLIDER_MASS, n_sides, gravity)
     stiffness = load * ratio / sag_tolerance  # slider deflection = sag / ratio
     lifted = load / (gravity * ratio) * n_sides  # weight-equivalent mass seen by the platform
