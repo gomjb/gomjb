@@ -1,5 +1,5 @@
 [package]
-version = "0.1.0"
+version = "0.2.0"
 title = "Physics Designer"
 description = "Python designer for Isaac Sim physics models: object move/align, snapping, anchors, joint creation, physics properties, mechanism templates and setup validation - all undoable."
 category = "Simulation"
@@ -21,3 +21,7 @@ name = "gomjb.physics_designer"
 [[test]]
 dependencies = ["omni.kit.test"]
 args = ["--/app/window/dpiScaleOverride=1.0", "--no-window"]
+stdoutFailPatterns.exclude = [
+    # test_template_and_error_rollback raises inside the command on purpose; Kit logs every failing command
+    '*Failed to execute a command: PhysicsDesignerEditCommand*',
+]

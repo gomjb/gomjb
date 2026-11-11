@@ -8,6 +8,7 @@ from pxr import Usd, UsdGeom, UsdPhysics
 
 from . import joints as jt
 from . import math_utils as mu
+from . import physics as ph
 from . import transform as tf
 from .stage_utils import is_guide
 
@@ -34,6 +35,29 @@ def _rigid_ancestor(prim: Usd.Prim) -> Optional[Usd.Prim]:
     return None
 
 
+def _articulation_root(prim: Usd.Prim) -> Optional[Usd.Prim]:
+    """The prim itself or nearest ancestor carrying ArticulationRootAPI."""
+    p = prim
+    while p and not p.IsPseudoRoot():
+        if p.HasAPI(UsdPhysics.ArticulationRootAPI):
+            return p
+        p = p.GetParent()
+    return None
+
+
+def _has_closed_loop_articulation(stage: Usd.Stage) -> bool:
+    """A joint excluded from the articulation that still links two bodies of one articulation."""
+    for prim in stage.Traverse():
+        if not prim.IsA(UsdPhysics.Joint) or not UsdPhysics.Joint(prim).GetExcludeFromArticulationAttr().Get():
+            continue
+        b0, b1 = jt.joint_bodies(prim)
+        if b0 is not None and b1 is not None:
+            r0, r1 = _articulation_root(b0), _articulation_root(b1)
+            if r0 is not None and r1 is not None and r0.GetPath() == r1.GetPath():
+                return True
+    return False
+
+
 def _has_collider(prim: Usd.Prim) -> bool:
     return any(p.HasAPI(UsdPhysics.CollisionAPI) for p in Usd.PrimRange(prim))
 
@@ -44,6 +68,13 @@ def validate(stage: Usd.Stage, pos_tol: float = 1e-3, rot_tol_deg: float = 0.5) 
     if not scenes:
         issues.append(Issue(WARNING, "/", "No PhysicsScene on the stage (Isaac Sim creates a default one, "
                                           "but gravity/solver settings are then implicit).", fix="add_scene"))
+    if _has_closed_loop_articulation(stage):
+        for scene in scenes:
+            if ph.uses_gpu_dynamics(scene):
+                issues.append(Issue(WARNING, str(scene.GetPath()),
+                                    "GPU dynamics with a closed-loop articulation: in Isaac Sim 6.1 the PhysX GPU "
+                                    "solver diverged (NaN) when such a mechanism shared the scene with other "
+                                    "articulations. Use CPU dynamics.", fix="cpu_dynamics"))
 
     for prim in stage.Traverse():
         path = str(prim.GetPath())
@@ -110,6 +141,11 @@ def _check_joint(joint: Usd.Prim, pos_tol: float, rot_tol: float) -> List[Issue]
     if dp > pos_tol or da > rot_tol:
         out.append(Issue(ERROR, path, f"Joint frames disagree by {dp:.4g} units / {da:.3g} deg: bodies will jump "
                                       "when simulation starts.", fix="realign_joint"))
+    if b0 is not None and b1 is not None and not j.GetExcludeFromArticulationAttr().Get() \
+            and _articulation_root(b0) is None and _articulation_root(b1) is None:
+        out.append(Issue(WARNING, path, "Joint between two bodies outside any articulation: Newton (the default "
+                                        "engine of the Isaac Sim 6 full app) rejects it. Put ArticulationRootAPI on "
+                                        "the mechanism's root prim (PhysX accepts both)."))
     if joint.IsA(UsdPhysics.RevoluteJoint) or joint.IsA(UsdPhysics.PrismaticJoint):
         typed = UsdPhysics.RevoluteJoint(joint) if joint.IsA(UsdPhysics.RevoluteJoint) else UsdPhysics.PrismaticJoint(joint)
         lo, hi = typed.GetLowerLimitAttr().Get(), typed.GetUpperLimitAttr().Get()
@@ -120,8 +156,6 @@ def _check_joint(joint: Usd.Prim, pos_tol: float, rot_tol: float) -> List[Issue]
 
 def apply_fix(stage: Usd.Stage, issue: Issue) -> bool:
     """Apply the automatic fix attached to ``issue``. Returns True if something changed."""
-    from . import physics as ph
-
     prim = stage.GetPrimAtPath(issue.path) if issue.path != "/" else None
     if issue.fix == "add_scene":
         ph.ensure_physics_scene(stage)
@@ -135,6 +169,9 @@ def apply_fix(stage: Usd.Stage, issue: Issue) -> bool:
         return bool(ph.apply_collision([prim], approximation="convexHull"))
     if issue.fix == "convex_hull":
         UsdPhysics.MeshCollisionAPI.Apply(prim).CreateApproximationAttr().Set("convexHull")
+        return True
+    if issue.fix == "cpu_dynamics":
+        ph.set_cpu_dynamics(prim)
         return True
     return False
 

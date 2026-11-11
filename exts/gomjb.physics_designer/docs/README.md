@@ -21,12 +21,13 @@ extension입니다. 모든 작업은 **Ctrl+Z로 되돌릴 수 있고**, 같은 
 
 **명령줄로 실행**
 
-```bash
-./isaac-sim.sh --ext-folder <repo>/exts --enable gomjb.physics_designer
+```bat
+isaac-sim.bat --ext-folder <repo>\exts --enable gomjb.physics_designer
 ```
 
-지원 버전: Isaac Sim 4.x / 5.x (Kit 105+). 외부 의존성은 없고, 물리 스키마는 USD에 포함된
-`UsdPhysics`만 사용하므로 PhysX가 그대로 해석합니다.
+검증 환경: **Isaac Sim 6.1.0 (Kit 110, Windows, RTX 5060 Ti)** — PhysX(기본 `isaac-sim.bat`)와
+Newton(`isaac-sim.newton.bat`) 양쪽에서 5개 템플릿을 시뮬레이션해 확인했습니다.
+외부 의존성은 없고 물리 스키마는 USD 표준 `UsdPhysics`만 사용합니다.
 
 ---
 
@@ -34,6 +35,8 @@ extension입니다. 모든 작업은 **Ctrl+Z로 되돌릴 수 있고**, 같은 
 
 창 맨 위에는 현재 선택이 **선택 순서대로** 표시됩니다 (`0: Base [rigid]  1: Arm`).
 여러 기능이 이 순서를 사용합니다 — *첫 번째 = 기준/body0*, *마지막 = 타깃*.
+
+창의 글자는 영어입니다. Isaac Sim 기본 UI 폰트에 한글 글리프가 없어 한글이 `?`로 표시되기 때문입니다.
 
 ### 2.1 Move & Rotate (객체 이동)
 | 기능 | 설명 |
@@ -50,7 +53,7 @@ extension입니다. 모든 작업은 **Ctrl+Z로 되돌릴 수 있고**, 같은 
 xformOp 정밀도는 유지됩니다. 자식과 부모를 함께 선택하면 부모만 이동합니다(이중 이동 방지).
 
 ### 2.2 Snap (객체 스냅)
-* **Pivot → grid / BBox corner → grid / Rotation → step** : 위치·bbox 모서리·자세(XYZ 오일러)를 격자/각도에 맞춤
+* **Pivot to grid / BBox corner to grid / Rotation to step** : 위치·bbox 모서리·자세(XYZ 오일러)를 격자/각도에 맞춤
 * **Live grid snap / Live angle snap** : 뷰포트 기즈모로 끄는 동안 실시간 스냅 (실험적 기능)
 * **Snap to target** : 마지막 선택 객체(타깃)의 원점 또는 bbox 중심으로 나머지를 이동
 * **Snap to nearest point** : 이동 객체의 원점(또는 bbox 27점 중 가장 가까운 점)을 타깃의
@@ -80,26 +83,51 @@ xformOp 정밀도는 유지됩니다. 자식과 부모를 함께 선택하면 �
 (스케일·부모 회전 포함) 시뮬레이션 시작 시 물체가 튀는 현상이 없습니다.
 조인트 생성 후 body를 옮겼다면 조인트를 선택하고 *Realign selected joints* 를 누르세요.
 
+**Newton 엔진을 쓸 때 (`isaac-sim.newton.bat`)**
+* body끼리 연결된 조인트는 반드시 articulation에 속해야 합니다 → 기구의 루트 prim에 *Articulation root* 적용.
+* articulation 안에서는 **body0 = 부모(루트 쪽), body1 = 자식** 순서로 선택해 만드세요. 반대면 Newton이
+  `Reversed joints are not supported` 로 초기화를 거부합니다.
+* 루프를 닫는 조인트는 *Exclude from artic.* 로 빼고, 회전(revolute) 조인트로 닫으세요
+  (Newton의 MuJoCo 솔버는 prismatic 루프 닫힘을 지원하지 않습니다).
+
 ### 2.5 Physics properties (물리 속성)
 Rigid / Kinematic / Collider only (근사: none·convexHull·convexDecomposition·meshSimplification·
 boundingCube·boundingSphere), 질량·밀도, 물리 머티리얼(정/동마찰, 반발계수 — `physics` purpose로
 바인딩해 렌더 머티리얼과 분리), Articulation root, 두 객체 간 충돌 필터, Physics scene, Ground plane,
 물리 속성 일괄 제거.
 
+*Physics scene* 버튼으로 만든 씬은 **CPU 물리(CPU dynamics + MBP broadphase)** 로 설정됩니다.
+기구 설계용 씬은 작지만 제약이 많아 CPU 솔버가 정확하고, Isaac Sim 6.1에서 GPU 솔버는 폐루프 기구(시저)가
+다른 articulation과 함께 있을 때 발산(NaN)하는 것을 확인했기 때문입니다.
+
 ### 2.6 Mechanism templates (메커니즘 템플릿)
 파라미터를 입력해 바로 시뮬레이션 가능한 기구를 생성합니다 (단위: stage unit, 기본 m / deg).
 
 | 템플릿 | 구성 |
 |---|---|
-| Pendulum chain | 캡슐 링크 N개 + revolute 연쇄, 초기 각도, 감쇠, articulation 옵션 |
+| Pendulum chain | 캡슐 링크 N개 + revolute 연쇄, 초기 각도, 감쇠 |
 | Hydraulic cylinder | 배럴 + 로드 + 구동 prismatic(스트로크 제한, PD 드라이브), 장착 앵커 `MountBase`/`MountRod` |
 | Hinged door | 고정 포스트 + 도어 패널, 개방각 제한 revolute + 댐핑 |
 | Linear slider | 고정 레일 + 캐리지, 행정 제한 prismatic |
 | Scissor lift | N단 시저 암(좌/우), 중앙 핀·단간 핀, 하부 고정핀 + **구동 슬라이더(액추에이터)**, 상부 고정핀 + 자유 슬라이더 |
 
-시저 리프트는 폐루프 기구이므로 articulation이 아닌 일반(maximal coordinate) 조인트로 만들어집니다.
-하부 `Actuator_*` prismatic 드라이브의 target을 음수로 줄수록 리프트가 올라갑니다.
-`mechanisms.scissor_slider_offset_for_height()` 로 목표 높이에 해당하는 target을 계산할 수 있습니다.
+모든 템플릿은 Isaac Sim 로봇 에셋과 같은 관례로 **루트에 ArticulationRootAPI가 있는 고정 베이스
+articulation** 이며, 조인트는 body0 = 부모, body1 = 자식입니다.
+
+시저 리프트는 폐루프 기구입니다. 일반(maximal) 조인트로 만들면 기구 배율(3단·20°에서 약 8배) 때문에
+반사 질량이 극단적으로 커져 PhysX 반복 솔버가 버티지 못하고 무너집니다(실측: 핀이 4 cm까지 벌어짐).
+그래서 트리는 articulation으로 만들고 **루프를 닫는 회전 핀만 `excludeFromArticulation`** 으로 뺐습니다.
+* 하부 `Actuator_*` prismatic 드라이브의 target을 음수로 줄수록 리프트가 올라갑니다.
+  `mechanisms.scissor_slider_offset_for_height()` 가 목표 핀 높이에 해당하는 target을 계산합니다.
+* 액추에이터 강성/감쇠는 하중과 기구 배율에서 자동 계산됩니다. `sag_tolerance`(기본 2 mm)는
+  하중에 의한 플랫폼 정적 처짐 한도이고, 감쇠는 임계 감쇠입니다.
+
+Isaac Sim 6.1 실측 (3단, 팔 1.2 m, 20°, 목표 핀 높이 2.2 m):
+
+| 엔진 | 플랫폼 상승 (목표 +0.969 m) | 최대 핀 오차 |
+|---|---|---|
+| PhysX (CPU) | +0.977 m | 0.94 mm |
+| Newton | +0.964 m | 0.94 mm |
 
 ### 2.7 Validate (물리 설정 검사)
 *Validate stage* 로 다음을 검사하고, *Auto-fix* 로 고칠 수 있는 항목은 자동 수정합니다.
@@ -107,6 +135,8 @@ boundingCube·boundingSphere), 질량·밀도, 물리 머티리얼(정/동마찰
 * 조인트 양쪽 프레임 불일치(→ realign), 존재하지 않는 body 대상, body 없는 조인트, 잘못된 limit
 * 중첩된 rigid body, 충돌체/질량 없는 rigid body(→ 충돌체 추가), 비균일 스케일
 * 동적 body의 triangle-mesh 충돌체(→ convexHull), PhysicsScene 없음(→ 생성)
+* articulation 밖에서 두 body를 잇는 조인트 (Newton이 거부)
+* GPU 물리 + 폐루프 articulation 조합(→ CPU 물리로 전환)
 
 ---
 
@@ -135,9 +165,22 @@ with designer_edit(["/World/Base", "/World/Arm"], "Assemble arm"):
 run_edit(lambda s: mechanisms.build_scissor_lift(s, stages=4, arm_length=1.0))
 ```
 
+**시뮬레이션 중 제어와 상태 읽기는 텐서 API로** 하세요. 재생 중에는 물리 상태가 USD가 아닌
+Fabric/텐서에 있으므로, USD에서 위치를 읽으면 초기값만 나옵니다. Newton은 실행 중 USD 속성 변경도 읽지 않습니다.
+
+```python
+from isaacsim.core.experimental.prims import Articulation, RigidPrim
+
+lift = Articulation("/World/ScissorLift")
+dofs = [i for i, n in enumerate(lift.dof_names) if n.startswith("Actuator")]
+target = mechanisms.scissor_slider_offset_for_height(1.2, 20, 3, height=2.2)
+lift.set_dof_position_targets([[target] * len(dofs)], dof_indices=dofs)
+z = RigidPrim("/World/ScissorLift/Platform").get_world_poses()[0].numpy()[0, 2]
+```
+
 예제:
 * `examples/offline_build_scene.py` — Isaac Sim 없이(`pip install usd-core`) 데모 씬 `.usda` 생성
-* `examples/isaac_standalone_scissor_lift.py` — `./python.sh` 로 실행, 시저 리프트를 드라이브로 상승시키며 높이 출력
+* `examples/isaac_standalone_scissor_lift.py` — `python.bat` 로 실행, 시저 리프트를 목표 높이까지 올리며 높이 출력
 
 ---
 
@@ -179,8 +222,18 @@ python -m pytest tests_offline -q
 ```
 
 `tests_offline/kit_stubs.py` 는 omni.ui / omni.usd / omni.kit.commands 의 최소 대역으로, 실제 창의
-버튼 콜백과 Undo 커맨드를 usd-core 스테이지에서 실행해 봅니다. Kit 내부 테스트는
-`gomjb/physics_designer/tests` 에 있으며 Isaac Sim의 테스트 러너로 실행합니다.
+버튼 콜백과 Undo 커맨드를 usd-core 스테이지에서 실행해 봅니다.
+
+Kit 내부 테스트(`gomjb/physics_designer/tests`: 실제 omni.ui 창, 조인트·템플릿 생성, Undo/Redo, 오류 롤백)는
+Isaac Sim 자체 확장 테스트와 같은 방식으로 실행합니다:
+
+```bat
+set ISAAC=E:\isaac-sim-standalone-6.1.0-windows-x86_64
+"%ISAAC%\kit\kit.exe" --empty --enable omni.kit.test --/exts/omni.kit.test/runTestsAndQuit=true ^
+  --/exts/omni.kit.test/testExts/0=gomjb.physics_designer --/exts/omni.kit.test/testExtArgs/0=--no-window ^
+  --ext-folder <repo>\exts --ext-folder "%ISAAC%\exts" --ext-folder "%ISAAC%\extscache" ^
+  --ext-folder "%ISAAC%\extsDeprecated" --ext-folder "%ISAAC%\extsInternal" --ext-folder "%ISAAC%\apps" --no-window
+```
 
 ## 6. 알려진 제한
 
@@ -188,3 +241,5 @@ python -m pytest tests_offline -q
   약간의 떨림이 있을 수 있습니다. Kit 뷰포트 자체 스냅 기능과 함께 쓰는 것은 권장하지 않습니다.
 * 템플릿은 Z-up 기준으로 작성되며 Y-up 스테이지에서는 루트를 회전시켜 배치합니다.
 * 드라이브 stiffness 단위는 PhysX 규약을 따릅니다(각도 드라이브는 deg 기준).
+* PhysX GPU 물리에서 폐루프 articulation(시저)과 다른 articulation을 한 씬에 두면 발산합니다(Isaac Sim 6.1 실측).
+  디자이너가 만드는 씬은 CPU 물리이고, 검증기가 GPU 씬에서 이를 경고·수정합니다.

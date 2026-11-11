@@ -166,7 +166,10 @@ def apply_articulation_root(prim: Usd.Prim) -> None:
 
 
 def ensure_physics_scene(stage: Usd.Stage, path: Optional[str] = None, gravity: float = 9.81) -> Usd.Prim:
-    """Return the first PhysicsScene or create one with gravity along -up (in stage units)."""
+    """Return the first PhysicsScene or create one with gravity along -up (in stage units).
+
+    A created scene runs PhysX on the CPU (see :func:`set_cpu_dynamics`).
+    """
     for prim in stage.Traverse():
         if prim.IsA(UsdPhysics.Scene):
             return prim
@@ -177,7 +180,29 @@ def ensure_physics_scene(stage: Usd.Stage, path: Optional[str] = None, gravity: 
     mpu = float(UsdGeom.GetStageMetersPerUnit(stage) or 1.0)
     scene.CreateGravityDirectionAttr().Set(direction)
     scene.CreateGravityMagnitudeAttr().Set(gravity / mpu)
+    set_cpu_dynamics(scene.GetPrim())
     return scene.GetPrim()
+
+
+GPU_DYNAMICS_ATTR = "physxScene:enableGPUDynamics"  # PhysxSchema fallback: True
+
+
+def set_cpu_dynamics(scene: Usd.Prim) -> None:
+    """Run PhysX on the CPU (CPU dynamics + MBP broadphase).
+
+    Mechanism scenes are small but constraint-heavy; in Isaac Sim 6.1 the GPU solver diverged
+    when a closed-loop articulation (scissor lift) shared the scene with other articulations,
+    while the CPU solver stays exact.  Authored as plain PhysxSceneAPI attributes so it also
+    works with ``usd-core``, which ships without ``PhysxSchema``.
+    """
+    scene.AddAppliedSchema("PhysxSceneAPI")
+    scene.CreateAttribute(GPU_DYNAMICS_ATTR, Sdf.ValueTypeNames.Bool).Set(False)
+    scene.CreateAttribute("physxScene:broadphaseType", Sdf.ValueTypeNames.Token).Set("MBP")
+
+
+def uses_gpu_dynamics(scene: Usd.Prim) -> bool:
+    attr = scene.GetAttribute(GPU_DYNAMICS_ATTR)
+    return True if not attr or attr.Get() is None else bool(attr.Get())
 
 
 def create_ground_plane(stage: Usd.Stage, path: Optional[str] = None, size: float = 50.0,

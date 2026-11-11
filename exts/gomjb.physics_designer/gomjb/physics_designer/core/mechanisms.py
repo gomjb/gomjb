@@ -2,9 +2,13 @@
 
 Every builder creates a self-contained hierarchy::
 
-    <root>            Xform placed at ``origin``
+    <root>            Xform placed at ``origin``, ArticulationRootAPI
       <Body>...       rigid bodies (Xform + child geometry, body scale = 1)
-      Joints/...      joints between them
+      Joints/...      joints between them (body0 = parent, body1 = child)
+
+Each mechanism is one fixed-base articulation, the convention of Isaac Sim robot assets:
+PhysX solves it with exact reduced-coordinate joints and Newton only accepts joints that
+belong to an articulation.  Loop-closing joints are ``excludeFromArticulation``.
 
 Dimensions are in stage units (Isaac Sim default: meters), angles in degrees, and layouts
 are authored Z-up in the root's local frame (the root is rotated for Y-up stages).
@@ -44,6 +48,7 @@ class _Builder:
         if direction is not None:
             rot = mu.rotation_from_to((0, 0, 1), direction)
         tf.set_world_matrix(root, mu.make_transform(origin, rot))
+        ph.apply_articulation_root(root)
         self.root = root
         self.result: Dict[str, List[str]] = {"root": [str(self.root_path)], "bodies": [], "joints": [], "anchors": []}
 
@@ -120,7 +125,7 @@ class _Builder:
 # ---------------------------------------------------------------------------------------
 def build_pendulum_chain(stage: Usd.Stage, name: str = "PendulumChain", origin=(0, 0, 2.0), links: int = 5,
                          link_length: float = 0.25, link_radius: float = 0.02, link_mass: float = 0.5,
-                         initial_angle: float = 30.0, damping: float = 0.0, articulation: bool = False,
+                         initial_angle: float = 30.0, damping: float = 0.0,
                          parent=None) -> Dict[str, List[str]]:
     """Chain of capsule links hanging from a world pivot, revolute about local Y."""
     b = _Builder(stage, name, origin, parent)
@@ -138,8 +143,6 @@ def build_pendulum_chain(stage: Usd.Stage, name: str = "PendulumChain", origin=(
             spec.drive = jt.DriveSpec(stiffness=0.0, damping=damping)
         b.joint(spec, prev, link, top)
         prev = link
-    if articulation:
-        ph.apply_articulation_root(b.root)
     return b.result
 
 
@@ -211,9 +214,8 @@ def build_scissor_lift(stage: Usd.Stage, name: str = "ScissorLift", origin=(0, 0
                        arm_length: float = 1.2, angle: float = 25.0, width: float = 0.8,
                        arm_section=(0.06, 0.03), sides: int = 2, arm_mass: float = 5.0,
                        platform_mass: float = 20.0, base_mass: float = 60.0, arm_collision: bool = False,
-                       drive_stiffness: float = 1.0e5, drive_damping: float = 1.0e4,
-                       parent=None) -> Dict[str, List[str]]:
-    """Multi-stage scissor lift (closed kinematic loops → maximal-coordinate joints).
+                       sag_tolerance: float = 0.002, parent=None) -> Dict[str, List[str]]:
+    """Multi-stage scissor lift.
 
     Layout in the root frame: arms move in the XZ plane, pins rotate about Y.
 
@@ -222,7 +224,16 @@ def build_scissor_lift(stage: Usd.Stage, name: str = "ScissorLift", origin=(0, 0
       the base along X (driven prismatic joint = actuator).
     * Top: ``B[n-1]`` is pinned to the platform at -X; ``A[n-1]`` rides a platform slider.
 
-    Driving the bottom slider's prismatic target toward negative values raises the lift.
+    Driving the bottom slider's prismatic target toward negative values raises the lift
+    (see :func:`scissor_slider_offset_for_height`).
+
+    A scissor is a chain of closed loops with a large motion ratio, which plain
+    (maximal-coordinate) joints cannot hold under load.  The lift is therefore one fixed-base
+    articulation (exact reduced-coordinate joints, actuator in the tree) and only the
+    loop-closing joints are ``excludeFromArticulation`` — the standard PhysX pattern for loops.
+    The actuator drive is sized from the lifted weight: stiffness keeps the static platform
+    sag under ``sag_tolerance`` (stage units) and damping is critical for the lifted mass
+    reflected onto the slider.
     """
     if stages < 1:
         raise ValueError("stages must be >= 1")
@@ -246,12 +257,22 @@ def build_scissor_lift(stage: Usd.Stage, name: str = "ScissorLift", origin=(0, 0
     side_list = [0.0] if sides == 1 else [-1.0, 1.0]
     rot_a = Gf.Rotation(Gf.Vec3d(0, 1, 0), -angle)  # local X -> (cos, 0, sin)
     rot_b = Gf.Rotation(Gf.Vec3d(0, 1, 0), angle)   # local X -> (cos, 0, -sin)
-    pin = lambda nm: jt.JointSpec("revolute", name=nm, axis="Y")  # noqa: E731
 
-    # slider travel (displacement from the initial pose, along X)
-    x_raised = L / 2 * math.cos(math.radians(75.0))
-    x_folded = L / 2 * math.cos(math.radians(4.0))
-    lower, upper = x_raised - w, x_folded - w
+    def pin(nm: str, loop: bool = False) -> jt.JointSpec:
+        return jt.JointSpec("revolute", name=nm, axis="Y", exclude_from_articulation=loop)
+
+    # slider travel along X, measured from the initial pose (fixed pin to slider span = L·cos)
+    lower = scissor_slider_offset(L, angle, 75.0)
+    upper = scissor_slider_offset(L, angle, 4.0)
+
+    # actuator drive sized from the lifted weight and the scissor's motion ratio
+    slider_mass = 1.0
+    ratio = stages / math.tan(th)  # platform rise per unit of slider travel
+    lifted = platform_mass + len(side_list) * (2 * stages * arm_mass + 2 * slider_mass)
+    gravity = 9.81 / float(UsdGeom.GetStageMetersPerUnit(stage) or 1.0)
+    load = lifted * gravity * ratio / len(side_list)  # per actuator
+    stiffness = load * ratio / sag_tolerance  # slider deflection = sag / ratio
+    damping = 2.0 * math.sqrt(stiffness * lifted * ratio ** 2 / len(side_list))
 
     for si, s in enumerate(side_list):
         tag = "" if sides == 1 else ("_L" if s < 0 else "_R")
@@ -265,29 +286,32 @@ def build_scissor_lift(stage: Usd.Stage, name: str = "ScissorLift", origin=(0, 0
                                  mass=arm_mass, collider=arm_collision))
             arms_b.append(b.body(f"ArmB{tag}_{i}", (0, y_in, zc), "box", (L, t, a), rot=rot_b, color=BLUE,
                                  mass=arm_mass, collider=arm_collision))
-            b.joint(pin(f"Center{tag}_{i}"), arms_a[i], arms_b[i], (0, y_pin, zc))
+            # articulation tree (body0 = parent, body1 = child, as Newton requires):
+            # base → slider → B0 → A0 → links upward; centers above stage 0 close loops
+            b.joint(pin(f"Center{tag}_{i}", loop=i > 0), arms_b[i], arms_a[i], (0, y_pin, zc))
         for i in range(stages - 1):
             zj = z0 + (i + 1) * h
             b.joint(pin(f"LinkPlus{tag}_{i}"), arms_a[i], arms_b[i + 1], (w, y_pin, zj))
             b.joint(pin(f"LinkMinus{tag}_{i}"), arms_b[i], arms_a[i + 1], (-w, y_pin, zj))
 
-        # bottom: fixed pin + driven slider
-        b.joint(pin(f"BasePin{tag}"), base, arms_a[0], (-w, y_pin, z0))
-        slider_b = b.body(f"BaseSlider{tag}", (w, y_pin, z0), "box", (0.08, t, a), color=DARK, mass=1.0,
-                          collider=False)
+        # bottom: fixed pin (closes the base loop) + driven slider
+        b.joint(pin(f"BasePin{tag}", loop=True), base, arms_a[0], (-w, y_pin, z0))
+        slider_b = b.body(f"BaseSlider{tag}", (w, y_pin, z0), "box", (0.08, t, a), color=DARK,
+                          mass=slider_mass, collider=False)
         b.joint(pin(f"BaseSliderPin{tag}"), slider_b, arms_b[0], (w, y_pin, z0))
         b.joint(jt.JointSpec("prismatic", name=f"Actuator{tag}", axis="X", lower=lower, upper=upper,
-                             drive=jt.DriveSpec(stiffness=drive_stiffness, damping=drive_damping,
-                                                target_position=0.0)),
+                             drive=jt.DriveSpec(stiffness=stiffness, damping=damping, target_position=0.0)),
                 base, slider_b, (w, y_pin, z0))
 
-        # top: fixed pin + free slider
-        b.joint(pin(f"PlatformPin{tag}"), platform, arms_b[-1], (-w, y_pin, z_top))
-        slider_t = b.body(f"TopSlider{tag}", (w, y_pin, z_top), "box", (0.08, t, a), color=DARK, mass=1.0,
-                          collider=False)
-        b.joint(pin(f"TopSliderPin{tag}"), slider_t, arms_a[-1], (w, y_pin, z_top))
+        # top: fixed pin + free slider (the platform joins the tree through the first side only)
+        b.joint(pin(f"PlatformPin{tag}", loop=si > 0), arms_b[-1], platform, (-w, y_pin, z_top))
+        slider_t = b.body(f"TopSlider{tag}", (w, y_pin, z_top), "box", (0.08, t, a), color=DARK,
+                          mass=slider_mass, collider=False)
+        # loops close on revolute pins only: MuJoCo (Newton) maps them to "connect" constraints
+        # but has no equality constraint for a prismatic loop closure
         b.joint(jt.JointSpec("prismatic", name=f"TopSlide{tag}", axis="X", lower=lower, upper=upper),
                 platform, slider_t, (w, y_pin, z_top))
+        b.joint(pin(f"TopSliderPin{tag}", loop=True), arms_a[-1], slider_t, (w, y_pin, z_top))
     return b.result
 
 
@@ -296,11 +320,15 @@ def scissor_height(arm_length: float, angle: float, stages: int) -> float:
     return stages * arm_length * math.sin(math.radians(angle))
 
 
+def scissor_slider_offset(arm_length: float, angle0: float, angle: float) -> float:
+    """Slider travel (along X) that turns a lift built at ``angle0`` to arm ``angle`` (deg)."""
+    return arm_length * (math.cos(math.radians(angle)) - math.cos(math.radians(angle0)))
+
+
 def scissor_slider_offset_for_height(arm_length: float, angle0: float, stages: int, height: float) -> float:
     """Prismatic target that raises a lift built at ``angle0`` to the pin height ``height``."""
     s = max(-1.0, min(1.0, height / (stages * arm_length)))
-    angle = math.degrees(math.asin(s))
-    return arm_length / 2 * (math.cos(math.radians(angle)) - math.cos(math.radians(angle0)))
+    return scissor_slider_offset(arm_length, angle0, math.degrees(math.asin(s)))
 
 
 TEMPLATES = {

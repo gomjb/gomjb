@@ -54,9 +54,38 @@ def test_validation_detects_and_fixes(stage):
     assert "Nested rigid body" in msgs
     assert "No PhysicsScene" in msgs
     assert "Triangle-mesh collider" in msgs
+    assert "outside any articulation" in msgs
     frame_issue = [i for i in issues if i.fix == "realign_joint"]
     assert frame_issue and frame_issue[0].path == str(joint.GetPath())
     for i in issues:
         va.apply_fix(stage, i)
     remaining = va.validate(stage)
     assert not [i for i in remaining if i.fix in ("realign_joint", "add_scene", "convex_hull")]
+
+
+def test_created_scene_runs_on_cpu(stage):
+    scene = ph.ensure_physics_scene(stage)
+    # usd-core has no PhysxSchema registered, so check the authored list op itself
+    assert "PhysxSceneAPI" in scene.GetMetadata("apiSchemas").GetAddedOrExplicitItems()
+    assert not ph.uses_gpu_dynamics(scene)
+    assert scene.GetAttribute("physxScene:broadphaseType").Get() == "MBP"
+
+
+def test_gpu_dynamics_with_closed_loop_articulation_is_flagged(stage):
+    from gomjb.physics_designer.core import mechanisms as me
+
+    me.build_scissor_lift(stage)
+    scene = UsdPhysics.Scene.Define(stage, "/World/PhysicsScene").GetPrim()  # PhysX default: GPU dynamics
+    assert ph.uses_gpu_dynamics(scene)
+    gpu = [i for i in va.validate(stage) if i.fix == "cpu_dynamics"]
+    assert len(gpu) == 1 and gpu[0].path == "/World/PhysicsScene"
+    va.apply_fix(stage, gpu[0])
+    assert not [i for i in va.validate(stage) if i.fix == "cpu_dynamics"]
+
+
+def test_open_chain_articulation_on_gpu_is_not_flagged(stage):
+    from gomjb.physics_designer.core import mechanisms as me
+
+    me.build_pendulum_chain(stage)
+    UsdPhysics.Scene.Define(stage, "/World/PhysicsScene")
+    assert not [i for i in va.validate(stage) if i.fix == "cpu_dynamics"]

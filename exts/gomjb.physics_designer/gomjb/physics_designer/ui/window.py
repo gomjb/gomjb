@@ -148,7 +148,7 @@ class PhysicsDesignerWindow(ui.Window):
     # Move / rotate / align
     # ---------------------------------------------------------------------------------
     def _build_move(self):
-        with section("Move & Rotate  (객체 이동)", collapsed=False):
+        with section("Move & Rotate", collapsed=False):
             with ui.VStack(spacing=3):
                 self._move_step = FloatInput("Move step", 0.1, "Distance per nudge (stage units)")
                 self._move_space = ComboInput("Space", ["world", "local"])
@@ -178,7 +178,7 @@ class PhysicsDesignerWindow(ui.Window):
                 button_row([
                     ("Drop to ground", lambda: self._drop(False), "Bbox bottom onto ground height"),
                     ("Drop onto objects", lambda: self._drop(True), "Rest on the highest overlapping prim"),
-                    ("Copy pose (0 → rest)", self._copy_pose),
+                    ("Copy pose", self._copy_pose, "Copy the first selected prim's pose to the others"),
                 ])
 
     def _nudge(self, axis: str, sign: int):
@@ -223,16 +223,16 @@ class PhysicsDesignerWindow(ui.Window):
     # Snap
     # ---------------------------------------------------------------------------------
     def _build_snap(self):
-        with section("Snap  (객체 스냅)"):
+        with section("Snap"):
             with ui.VStack(spacing=3):
                 self._grid = FloatInput("Grid size", 0.05)
                 self._angle = FloatInput("Angle step (deg)", 15.0, step=1.0)
                 button_row([
-                    ("Pivot → grid", lambda: self._run("Grid snap", lambda s, p: sn.snap_to_grid(p, self._grid.value),
+                    ("Pivot to grid", lambda: self._run("Grid snap", lambda s, p: sn.snap_to_grid(p, self._grid.value),
                                                        min_sel=1)),
-                    ("BBox corner → grid", lambda: self._run(
+                    ("BBox corner to grid", lambda: self._run(
                         "Grid snap (bbox)", lambda s, p: sn.snap_to_grid(p, self._grid.value, use_bbox=True), min_sel=1)),
-                    ("Rotation → step", lambda: self._run(
+                    ("Rotation to step", lambda: self._run(
                         "Angle snap", lambda s, p: sn.snap_rotation(p, self._angle.value), min_sel=1)),
                 ])
                 self._live_pos = BoolInput("Live grid snap", False, "Snap while dragging with the gizmo",
@@ -293,7 +293,7 @@ class PhysicsDesignerWindow(ui.Window):
     # Anchors
     # ---------------------------------------------------------------------------------
     def _build_anchor(self):
-        with section("Anchors  (조립 기준점)"):
+        with section("Anchors"):
             with ui.VStack(spacing=3):
                 hint("Anchors are named frames on a part (holes, pins, mounting faces). Connect two anchors to "
                      "assemble parts, then create a joint exactly at the anchor.")
@@ -306,7 +306,7 @@ class PhysicsDesignerWindow(ui.Window):
                 hint("Connect: select the MOVING anchor first, then the TARGET anchor. The moving anchor's owner "
                      "(nearest rigid body, otherwise its parent) is moved.")
                 self._conn_rot = BoolInput("Align orientation", True)
-                self._conn_flip = BoolInput("Flip (Z faces Z)", False, "Rotate 180° about X so Z axes oppose")
+                self._conn_flip = BoolInput("Flip (Z faces Z)", False, "Rotate 180 deg about X so Z axes oppose")
                 self._conn_joint = ComboInput("Then create joint", ["none", "fixed", "revolute", "prismatic",
                                                                     "spherical"])
                 button_row([("Connect anchors", self._connect_anchors)])
@@ -357,7 +357,7 @@ class PhysicsDesignerWindow(ui.Window):
     # Joints
     # ---------------------------------------------------------------------------------
     def _build_joint(self):
-        with section("Joints  (조인트 생성)"):
+        with section("Joints"):
             with ui.VStack(spacing=3):
                 hint("Select body0 then body1 (one prim = joint to world). Selecting two anchors creates the "
                      "joint between their owners at the first anchor; pick World axis 'Anchor frame' to use the "
@@ -474,7 +474,7 @@ class PhysicsDesignerWindow(ui.Window):
     # Physics properties
     # ---------------------------------------------------------------------------------
     def _build_physics(self):
-        with section("Physics properties  (물리 속성)"):
+        with section("Physics Properties"):
             with ui.VStack(spacing=3):
                 self._approx = ComboInput("Collider approx.", list(ph.APPROXIMATIONS), default=1)
                 button_row([
@@ -523,7 +523,7 @@ class PhysicsDesignerWindow(ui.Window):
     # Templates
     # ---------------------------------------------------------------------------------
     def _build_templates(self):
-        with section("Mechanism templates  (메커니즘 템플릿)"):
+        with section("Mechanism Templates"):
             with ui.VStack(spacing=3):
                 self._tpl = ComboInput("Template", list(me.TEMPLATES), on_changed=lambda v: self._tpl_frame.rebuild())
                 self._tpl_frame = ui.Frame(height=0)
@@ -576,7 +576,7 @@ class PhysicsDesignerWindow(ui.Window):
     # Validation
     # ---------------------------------------------------------------------------------
     def _build_validate(self):
-        with section("Validate  (물리 설정 검사)"):
+        with section("Validate"):
             with ui.VStack(spacing=3):
                 button_row([("Validate stage", self._validate), ("Auto-fix fixable issues", self._autofix)])
                 ui.StringField(model=self._validation_model, multiline=True, read_only=True, height=160)
