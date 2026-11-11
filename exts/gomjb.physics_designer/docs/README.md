@@ -12,18 +12,24 @@ extension입니다. 모든 작업은 **Ctrl+Z로 되돌릴 수 있고**, 같은 
 
 ## 1. 설치 / 실행
 
-**Extension Manager로 추가**
+**Isaac Sim의 `extsUser` 폴더에 연결 (권장)**
 
-1. Isaac Sim 실행 → `Window > Extensions`
-2. 오른쪽 위 ☰(또는 ⚙) → *Extension Search Paths* 에 `<이 저장소>/exts` 추가
-3. 목록에서 **Physics Designer** 를 찾아 *Enable* (원하면 *Autoload* 체크)
-4. 메뉴 `Tools > Physics Designer` 로 창 열기/닫기
-
-**명령줄로 실행**
+Isaac Sim은 설치 폴더의 `extsUser`를 모든 앱에서 확장 경로로 읽습니다. 저장소를 복사하지 말고
+**디렉터리 정션**으로 연결하면 원본은 git 저장소 하나로 유지되고, 저장소를 고치면 Isaac Sim에 바로 반영됩니다
+(관리자 권한 불필요).
 
 ```bat
-isaac-sim.bat --ext-folder <repo>\exts --enable gomjb.physics_designer
+set ISAAC=E:\isaac-sim-standalone-6.1.0-windows-x86_64
+mklink /J "%ISAAC%\extsUser\gomjb.physics_designer" "<repo>\exts\gomjb.physics_designer"
 ```
+
+그다음 Isaac Sim에서 `Window > Extensions` → **Physics Designer** → *Enable* (원하면 *Autoload* 체크),
+메뉴 `Tools > Physics Designer` 로 창을 엽니다. 명령줄에서는 `isaac-sim.bat --enable gomjb.physics_designer`.
+정션을 지우려면 `rmdir "%ISAAC%\extsUser\gomjb.physics_designer"` (링크만 지워지고 저장소는 그대로입니다).
+같은 확장을 `extsUser`에 복사본으로도 두면 같은 버전이 두 번 등록되니 복사본은 두지 마세요.
+
+**다른 방법**: `Window > Extensions` → ☰ → *Extension Search Paths* 에 `<repo>/exts` 추가, 또는
+`isaac-sim.bat --ext-folder <repo>\exts --enable gomjb.physics_designer`.
 
 검증 환경: **Isaac Sim 6.1.0 (Kit 110, Windows, RTX 5060 Ti)** — PhysX(기본 `isaac-sim.bat`)와
 Newton(`isaac-sim.newton.bat`) 양쪽에서 5개 템플릿을 시뮬레이션해 확인했습니다.
@@ -386,7 +392,7 @@ Isaac Sim 자체 확장 테스트와 같은 방식으로 실행합니다:
 set ISAAC=E:\isaac-sim-standalone-6.1.0-windows-x86_64
 "%ISAAC%\kit\kit.exe" --empty --enable omni.kit.test --/exts/omni.kit.test/runTestsAndQuit=true ^
   --/exts/omni.kit.test/testExts/0=gomjb.physics_designer --/exts/omni.kit.test/testExtArgs/0=--no-window ^
-  --ext-folder <repo>\exts --ext-folder "%ISAAC%\exts" --ext-folder "%ISAAC%\extscache" ^
+  --ext-folder "%ISAAC%\extsUser" --ext-folder "%ISAAC%\exts" --ext-folder "%ISAAC%\extscache" ^
   --ext-folder "%ISAAC%\extsDeprecated" --ext-folder "%ISAAC%\extsInternal" --ext-folder "%ISAAC%\apps" --no-window
 ```
 
