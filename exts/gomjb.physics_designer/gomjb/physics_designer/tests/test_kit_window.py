@@ -158,7 +158,8 @@ class TestPhysicsDesignerWindow(omni.kit.test.AsyncTestCase):
         from ..core import mechanisms as me
         from ..core import physics as ph
 
-        res = run_edit(lambda s: (ph.ensure_physics_scene(s), me.build_scissor_lift(s, stages=2, angle=30.0))[-1])
+        res = run_edit(lambda s: (ph.ensure_physics_scene(s),
+                                  me.build_scissor_lift(s, stages=2, angle=30.0, loop_closure="rigid"))[-1])
         analysis = self.window.analysis
         analysis._root.model.set_value(res["root"][0])
         analysis._filter.model.set_value("Actuator")
@@ -173,3 +174,39 @@ class TestPhysicsDesignerWindow(omni.kit.test.AsyncTestCase):
             total = -(rec.channels["force:Actuator_L"][k] + rec.channels["force:Actuator_R"][k])
             expected = 2 * me.scissor_actuator_force(1.2, deg, 2, 20.0, 5.0, sides=2)
             self.assertAlmostEqual(total / expected, 1.0, delta=1e-6)
+
+    async def test_bushing_scissor_on_gpu_dynamics(self):
+        """The case that diverged in Isaac Sim 6.1 with rigid loop closures: a closed-loop
+        articulation next to another articulation on PhysX GPU dynamics. With bushing loop
+        closures (the default) the lift must stay finite and hold its pose under its drives."""
+        import math
+
+        import omni.timeline
+        from pxr import Sdf
+
+        from ..commands import run_edit
+        from ..core import joints as jt
+        from ..core import mechanisms as me
+        from ..core import physics as ph
+        from ..core import transform as tf
+
+        def build(s):
+            scene = ph.ensure_physics_scene(s)
+            scene.CreateAttribute(ph.GPU_DYNAMICS_ATTR, Sdf.ValueTypeNames.Bool).Set(True)
+            scene.CreateAttribute("physxScene:broadphaseType", Sdf.ValueTypeNames.Token).Set("GPU")
+            me.build_pendulum_chain(s, origin=(3.0, 0, 2.0))  # the other articulation
+            return me.build_scissor_lift(s, stages=2, angle=30.0)
+
+        res = run_edit(build)
+        loops = [p for p in res["joints"] if jt.is_bushing(self.stage.GetPrimAtPath(p))]
+        self.assertTrue(loops)
+        platform = self.stage.GetPrimAtPath(res["root"][0] + "/Platform")
+        z0 = tf.world_position(platform)[2]
+        timeline = omni.timeline.get_timeline_interface()
+        timeline.play()
+        for _ in range(240):
+            await omni.kit.app.get_app().next_update_async()
+        p = tf.world_position(platform)  # before Stop, which restores the authored pose
+        timeline.stop()
+        self.assertTrue(all(math.isfinite(c) for c in p), f"diverged: {p}")
+        self.assertAlmostEqual(p[2], z0, delta=0.02)  # the actuators hold the built pose

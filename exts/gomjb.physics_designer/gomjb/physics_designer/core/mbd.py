@@ -123,7 +123,7 @@ class MbdModel:
                 self._add_joint(prim, MarkerBodyRigid, ObjectJointGeneric)
         mbs.Assemble()
         dof = mbs.ComputeSystemDegreeOfFreedom()
-        self.dof = int(dof["degreeOfFreedom"])  # bushings: DOF held by springs count as free here
+        self.dof = int(dof["degreeOfFreedom"])  # bushings: DOF held by springs count as free here (has_bushings)
         self.redundant = int(dof["redundantConstraints"])
         if self.redundant:
             self._release_redundant()
@@ -144,6 +144,9 @@ class MbdModel:
         b0, b1 = jt.joint_bodies(prim)
         (p0, r0), _ = jt.joint_world_frames(prim)
         frame = mu.make_transform(p0, r0)
+        if jt.is_bushing(prim):
+            self._add_usd_bushing(prim, name, b0, b1, frame, MarkerBodyRigid)
+            return
         constrained, free = _constrained_axes(prim)
         drives = {}
         for axis, drive_name in _drive_axes(prim, free):
@@ -187,6 +190,39 @@ class MbdModel:
             visualization={"show": False, "axesRadius": 0.0, "axesLength": 0.0, "color": [-1, -1, -1, -1]})))
         self.joints[name] = mj
 
+    def _add_usd_bushing(self, prim: Usd.Prim, name: str, b0, b1, frame: Gf.Matrix4d,
+                         MarkerBodyRigid) -> None:
+        """A joint the designer converted to a bushing: its per-axis drive stiffness / damping
+        becomes a spring-damper here, so both solvers see the same soft connection."""
+        from exudyn.utilities import ObjectConnectorRigidBodySpringDamper
+
+        k, c = np.zeros(6), np.zeros(6)
+        for i, dof in enumerate(AXIS_NAMES):
+            if prim.HasAPI(UsdPhysics.DriveAPI, dof):
+                api = UsdPhysics.DriveAPI(prim, dof)
+                s_, d_ = float(api.GetStiffnessAttr().Get() or 0.0), float(api.GetDampingAttr().Get() or 0.0)
+                if i >= 3:  # PhysX angular drives are per degree; Exudyn works per radian
+                    s_, d_ = math.degrees(s_), math.degrees(d_)
+                k[i], c[i] = s_, d_
+        constrained = [1 if k[i] > 0 else 0 for i in range(6)]
+        markers, rotations, indices = [], [], []
+        for body in (b0, b1):
+            index, body_frame = self._side(body)
+            local = frame * body_frame.GetInverse()
+            markers.append(self.mbs.AddMarker(MarkerBodyRigid(bodyNumber=index,
+                                                              localPosition=list(local.ExtractTranslation()))))
+            rotations.append(_rot_matrix(mu.rotation_of(local)))
+            indices.append(index)
+        mj = MbdJoint(name, str(prim.GetPath()), "Bushing", -1, constrained,
+                      [i for i in range(6) if not constrained[i]], {}, True,
+                      rotations[0], -1 if indices[0] == self._ground else int(indices[0]), bushing=True)
+        mj.index = int(self.mbs.AddObject(ObjectConnectorRigidBodySpringDamper(
+            name=name, markerNumbers=markers, stiffness=np.diag(k), damping=np.diag(c),
+            rotationMarker0=rotations[0], rotationMarker1=rotations[1], useIntrinsicFormulation=True,
+            visualization={"show": False, "drawSize": -1.0, "color": [-1, -1, -1, -1]})))
+        self.joints[name] = mj
+        self.notes.setdefault("bushing joints (soft, stiffness from their drives)", []).append(name)
+
     def _release_redundant(self) -> None:
         """Release dependent constraint equations until none is left, keeping the mobility."""
         mbs = self.mbs
@@ -212,6 +248,11 @@ class MbdModel:
         mbs.Assemble()
         if self.redundant:
             self.notes["redundant constraints that could not be released"] = [str(self.redundant)]
+
+    @property
+    def has_bushings(self) -> bool:
+        """Some joints are springs (bushings): :attr:`dof` then counts the DOF they hold as free."""
+        return any(m.bushing for m in self.joints.values())
 
     # -- drives -------------------------------------------------------------------------
     @property

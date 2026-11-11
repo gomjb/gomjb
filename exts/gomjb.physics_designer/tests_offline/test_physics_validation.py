@@ -74,13 +74,30 @@ def test_created_scene_runs_on_cpu(stage):
 def test_gpu_dynamics_with_closed_loop_articulation_is_flagged(stage):
     from gomjb.physics_designer.core import mechanisms as me
 
-    me.build_scissor_lift(stage)
+    res = me.build_scissor_lift(stage, loop_closure="rigid")
     scene = UsdPhysics.Scene.Define(stage, "/World/PhysicsScene").GetPrim()  # PhysX default: GPU dynamics
     assert ph.uses_gpu_dynamics(scene)
-    gpu = [i for i in va.validate(stage) if i.fix == "cpu_dynamics"]
+    issues = va.validate(stage)
+    gpu = [i for i in issues if i.fix == "cpu_dynamics"]
     assert len(gpu) == 1 and gpu[0].path == "/World/PhysicsScene"
+    loops = [i for i in issues if i.fix == "bushing"]  # each rigid loop closure: suggest a bushing
+    assert {i.path for i in loops} == {p for p in res["joints"]
+                                       if UsdPhysics.Joint(stage.GetPrimAtPath(p)).GetExcludeFromArticulationAttr().Get()}
     va.apply_fix(stage, gpu[0])
     assert not [i for i in va.validate(stage) if i.fix == "cpu_dynamics"]
+    for i in loops:  # converting the loop closures to bushings also clears the GPU concern
+        va.apply_fix(stage, i)
+    assert not [i for i in va.validate(stage) if i.fix in ("bushing",)]
+
+
+def test_bushing_loop_closures_are_not_flagged_on_gpu(stage):
+    from gomjb.physics_designer.core import mechanisms as me
+
+    me.build_scissor_lift(stage)  # default: bushing loop closures
+    UsdPhysics.Scene.Define(stage, "/World/PhysicsScene")
+    issues = va.validate(stage)
+    assert not [i for i in issues if i.fix in ("cpu_dynamics", "bushing")]
+    assert not [i for i in issues if i.severity == va.ERROR], va.format_report(issues)
 
 
 def test_non_fixed_world_joint_in_articulation_is_flagged(stage):

@@ -7,6 +7,7 @@ from typing import Optional
 import omni.ui as ui
 from pxr import Gf, Usd, UsdPhysics
 
+from ..core import bushing as bu
 from ..core import joint_builder as jb
 from ..core import joints as jt
 from ..core import motion as mo
@@ -16,6 +17,8 @@ from ..core import units as un
 from .widgets import BoolInput, ComboInput, FloatInput, StringInput, button_row, hint, section
 
 PARENTS = ["<root>/Joints", "base body", "action body"]
+JOINT_MODELS = {"Auto: bushing if it closes a loop": "auto", "Bushing (every undriven joint)": "bushing",
+                "Rigid joint": "rigid"}
 MOTION_LABELS = {"Displacement (time)": "displacement", "Velocity (time)": "velocity",
                  "Acceleration (time)": "acceleration"}
 _SELECTED = {"Button:selected": {"background_color": 0xFF7A5A2A}}
@@ -80,6 +83,20 @@ class JointSection:
                 self._collide = BoolInput("Collide bodies", False)
                 self._excl = BoolInput("Exclude from artic.", False, "A loop-closing joint of an articulation")
                 self._parent = ComboInput("Joint prim under", PARENTS)
+                ui.Separator(height=6)
+                hint("Joint model: a bushing is a 6-DOF spring-damper in place of the joint - stiff on the axes "
+                     "the joint locks, zero on its free axes. Auto makes an undriven joint a bushing when it closes "
+                     "a loop (PhysX converges poorly on rigid loop closures, GPU worst). Stiffness is sized so the "
+                     "mechanism's whole weight deflects it by the tolerances; damping is critical. Driven joints "
+                     "stay joints. Keep loops rigid for Newton (revolute loop closures only).")
+                self._model = ComboInput("Joint model", list(JOINT_MODELS))
+                self._defl = u.float("Bushing deflection", 1.0e-4, "length", step=1e-5,
+                                     tooltip="Linear deflection under the mechanism's full weight")
+                self._adefl = u.float("Bushing twist", 0.01, "angle", step=0.001,
+                                      tooltip="Rotation under the full weight at the mechanism's size")
+                self._zeta = FloatInput("Damping ratio", 1.0, "1 = critical damping of the bushing's own vibration")
+                button_row([("Convert selected to bushing", self.convert_selected,
+                             "Replace the selected undriven joints by auto-sized bushings")])
                 ui.Separator(height=6)
                 hint("Motion of the selected revolute / translational joints (RecurDyn 'Include Motion'): the "
                      "joint's relative displacement follows an expression of TIME - deg for revolute joints, "
@@ -203,12 +220,35 @@ class JointSection:
 
         def op(stage, prims):
             body = picker.base if parent == "base body" else picker.action if parent == "action body" else None
-            return picker.create(stage, self.properties(stage), body.GetPath() if body is not None else None)
+            return picker.create(stage, self.properties(stage), body.GetPath() if body is not None else None,
+                                 **self.bushing_settings())
 
         joint = self._w._run(f"Create {kind} joint", op, modify=lambda p: [], select_result=True)
         self.cancel()
         if joint is not None:
-            self._prompt_model.set_value(f"Created {joint.GetPath()}. Choose a joint type for the next one.")
+            what = "bushing" if jt.is_bushing(joint) else "joint"
+            self._prompt_model.set_value(f"Created {what} {joint.GetPath()}. Choose a joint type for the next one.")
+            if what == "bushing":
+                self._w._status(f"{joint.GetName()} closes a loop: bushing, "
+                                f"{joint.GetAttribute('designer:bushing:sizing').Get()}")
+
+    def bushing_settings(self) -> dict:
+        """Joint model and bushing sizing (SI) for :meth:`JointPicker.create` / :func:`bushing.convert`."""
+        return {"model": JOINT_MODELS[self._model.value], "deflection": self._defl.si,
+                "angle_deflection": self._adefl.si, "damping_ratio": self._zeta.value}
+
+    def convert_selected(self) -> None:
+        settings = self.bushing_settings()
+        settings.pop("model")
+
+        def op(stage, prims):
+            joints = [p for p in prims if p.IsA(UsdPhysics.Joint)]
+            if not joints:
+                raise ValueError("select joint prims")
+            return [bu.convert(j, **settings) for j in joints]
+
+        # a converted joint is re-created at the same path: back up the joints themselves
+        self._w._run("Convert to bushing", op, min_sel=1, select_result=True)
 
     def properties(self, stage: Usd.Stage) -> jt.JointSpec:
         """Limits, drive, break and collision settings of the next joint, in stage units."""

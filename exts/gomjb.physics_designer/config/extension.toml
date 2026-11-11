@@ -1,5 +1,5 @@
 [package]
-version = "0.6.0"
+version = "0.7.0"
 title = "Physics Designer"
 description = "Python designer for Isaac Sim physics models: primitive body modeler with exact mass properties, move/align, snapping, anchors, joint creation, physics properties, mechanism templates, setup validation, result recording (joint forces, plots, CSV) and an exact constraint-based multibody solver (Exudyn) - all undoable."
 category = "Simulation"

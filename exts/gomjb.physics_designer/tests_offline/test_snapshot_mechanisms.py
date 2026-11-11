@@ -134,11 +134,22 @@ def test_scissor_articulation_is_a_parent_child_tree(stage, sides):
                         nxt.append(other)
         frontier = nxt
     assert set(depth) == set(res["bodies"]) | {"world"}
-    # Newton's MuJoCo solver closes loops with point constraints: only revolute loop joints map
+    # default loop closures are auto-sized bushings (soft, for PhysX); every loop joint is one
+    loops = [stage.GetPrimAtPath(jp) for jp in res["joints"]
+             if UsdPhysics.Joint(stage.GetPrimAtPath(jp)).GetExcludeFromArticulationAttr().Get()]
+    assert loops and all(jt.is_bushing(p) for p in loops)
+
+
+@pytest.mark.parametrize("sides", [1, 2])
+def test_rigid_scissor_loops_are_revolute_for_newton(stage, sides):
+    """Newton's MuJoCo solver closes loops with point constraints: only revolute loop joints map,
+    so loop_closure='rigid' keeps them revolute (MuJoCo constraints are soft already)."""
+    res = me.build_scissor_lift(stage, stages=3, sides=sides, loop_closure="rigid")
     for jp in res["joints"]:
         prim = stage.GetPrimAtPath(jp)
         if UsdPhysics.Joint(prim).GetExcludeFromArticulationAttr().Get():
             assert prim.IsA(UsdPhysics.RevoluteJoint), f"{jp}: loop closure must be revolute"
+            assert not jt.is_bushing(prim)
 
 
 def test_cylinder_direction(stage):

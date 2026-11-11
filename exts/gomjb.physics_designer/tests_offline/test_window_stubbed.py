@@ -99,6 +99,54 @@ def test_recurdyn_joint_base_action_point(env):
     assert not ctx.stage.GetPrimAtPath(joint_path)
 
 
+def test_joint_tool_makes_a_loop_closure_a_bushing(env):
+    """Auto joint model: A and B are both fixed to the world, so a revolute between them closes a
+    loop and is created as an auto-sized bushing; 'Rigid joint' keeps a revolute; undo works."""
+    win, ctx, commands = env
+    from gomjb.physics_designer.core import joints as jt
+    from gomjb.physics_designer.core import physics as ph
+
+    a, b = (ctx.stage.GetPrimAtPath(p) for p in ("/World/A", "/World/B"))
+    ph.apply_rigid_body([a, b])
+    for body in (a, b):
+        jt.create_joint(ctx.stage, jt.JointSpec("fixed"), None, body, tf_pos(body))
+    j = win.joints
+    assert j._model.value.startswith("Auto")
+
+    def revolute():
+        click("Revolute")
+        j._snap.widget.model.select(list(j._snap.items).index("Surface"))
+        j.on_viewport_pick("/World/A", (0.0, 0.03, 0.5))
+        j.on_viewport_pick("/World/B", (2.0, 0.03, 0.5))
+        j.on_viewport_pick("/World/B", (1.0, 0.03, 0.0))
+        return ctx.stage.GetPrimAtPath(ctx.selection.paths[0])
+
+    joint = revolute()
+    assert jt.is_bushing(joint) and "bushing" in j._prompt_model.as_string
+    assert "closes a loop: bushing, k =" in status(win)
+    assert not joint.HasAPI(UsdPhysics.DriveAPI, "rotZ") and joint.HasAPI(UsdPhysics.DriveAPI, "transX")
+    path = joint.GetPath()
+    commands.undo()
+    assert not ctx.stage.GetPrimAtPath(path)
+
+    j._model.widget.model.select(list(j._model.items).index("Rigid joint"))
+    rigid = revolute()
+    assert rigid.IsA(UsdPhysics.RevoluteJoint) and not jt.is_bushing(rigid)
+    # convert it afterwards from the selection; undo restores the revolute
+    select(ctx, str(rigid.GetPath()))
+    click("Convert selected to bushing")
+    assert "done" in status(win), status(win)
+    assert jt.is_bushing(ctx.stage.GetPrimAtPath(rigid.GetPath()))
+    commands.undo()
+    assert ctx.stage.GetPrimAtPath(rigid.GetPath()).IsA(UsdPhysics.RevoluteJoint)
+
+
+def tf_pos(prim):
+    from gomjb.physics_designer.core import transform as tf
+
+    return tf.world_position(prim)
+
+
 def test_motion_apply_load_remove_and_simulate(env):
     """Include Motion on a joint from the window, then the exact solver's dynamic run follows it."""
     pytest.importorskip("exudyn")
@@ -354,7 +402,7 @@ def test_exact_solver_sweep_and_bushings(env, tmp_path):
 
     UsdGeom.SetStageMetersPerUnit(ctx.stage, 1.0)
     ph.ensure_physics_scene(ctx.stage)
-    res = me.build_scissor_lift(ctx.stage, stages=1, sides=1, angle=30.0)
+    res = me.build_scissor_lift(ctx.stage, stages=1, sides=1, angle=30.0, loop_closure="rigid")
     a = win.analysis
     a._root.model.set_value(res["root"][0])
     targets = [me.scissor_slider_offset(1.2, 30.0, deg) for deg in (40.0, 50.0)]
@@ -437,7 +485,7 @@ def test_unit_system_mmks_everywhere(env, tmp_path):
 
     # exact solver: From / To in mm, results in N and mm
     ph.ensure_physics_scene(ctx.stage)
-    res = me.build_scissor_lift(ctx.stage, stages=1, sides=1, angle=30.0)
+    res = me.build_scissor_lift(ctx.stage, stages=1, sides=1, angle=30.0, loop_closure="rigid")
     a = win.analysis
     assert a._sweep_from.unit_label.text == "mm | deg"
     a._root.model.set_value(res["root"][0])

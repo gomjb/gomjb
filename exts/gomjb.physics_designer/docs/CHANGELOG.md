@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.7.0] - 2026-11-12
+### Added
+- Bushings in place of joints (`core.bushing`, `joints.bushing_spec` / `convert_to_bushing`): a D6
+  spring-damper, stiff on the axes the joint locks and zero on its free axes, marked
+  `designer:bushing` with its sizing recorded on the prim.
+- Automatic stiffness: linear `k = M*g/delta` (delta 0.1 mm), angular `k = M*g*L/theta` (0.01 deg),
+  critical damping on the reduced mass / inertia, from the mechanism the joint belongs to.
+- Joint model in the Joints section: Auto (an undriven loop-closing joint becomes a bushing), Bushing
+  (every undriven joint), Rigid joint; tolerances and damping ratio; *Convert selected to bushing*.
+- Exact solver maps designer bushings to the same spring-damper (`MbdModel.has_bushings`).
+- Validation: a rigid loop closure inside an articulation gets an auto-fix to a bushing.
+- Kit test for the bushing scissor next to another articulation on PhysX GPU dynamics.
+
+### Changed
+- `build_scissor_lift(loop_closure="bushing")` by default; `"rigid"` keeps revolute loop closures
+  (needed for Newton, whose MuJoCo solver closes loops with revolute joints only).
+- The GPU closed-loop warning ignores bushing loop closures.
+
 ## [0.6.0] - 2026-11-11
 ### Changed
 - Joints are created the RecurDyn way: a joint type button (Fixed, Revolute, Translational,

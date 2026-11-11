@@ -131,7 +131,7 @@ def test_prismatic_on_a_moving_arm(scene):
 
 @pytest.mark.parametrize("stages", [1, 2, 3])
 def test_single_side_scissor_actuator_force_is_exact(scene, stages):
-    res = me.build_scissor_lift(scene, stages=stages, sides=1, angle=30.0)
+    res = me.build_scissor_lift(scene, stages=stages, sides=1, angle=30.0, loop_closure="rigid")
     model = MbdModel(scene, res["root"][0])
     assert model.dof == 0 and model.drive_names == ["Actuator"]
     angles = [35.0, 45.0, 60.0]  # clear of the 90 deg singular (fully upright) pose
@@ -144,7 +144,7 @@ def test_single_side_scissor_actuator_force_is_exact(scene, stages):
 
 
 def test_two_sided_scissor_total_and_redundancy_report(scene):
-    res = me.build_scissor_lift(scene, stages=3, sides=2, angle=20.0)
+    res = me.build_scissor_lift(scene, stages=3, sides=2, angle=20.0, loop_closure="rigid")
     model = MbdModel(scene, res["root"][0])
     assert model.dof == 0 and model.redundant == 0 and model.released
     assert "not unique" in model.report()
@@ -164,7 +164,7 @@ def test_two_sided_scissor_total_and_redundancy_report(scene):
 
 def test_bushings_give_a_symmetric_split_with_the_same_total(scene):
     """Adams / Altair practice for redundant load paths: stiff bushings instead of exact joints."""
-    res = me.build_scissor_lift(scene, stages=3, sides=2, angle=20.0)
+    res = me.build_scissor_lift(scene, stages=3, sides=2, angle=20.0, loop_closure="rigid")
     model = MbdModel(scene, res["root"][0], redundancy="bushings")
     assert not model.released and "bushings" in model.report()
     target = me.scissor_slider_offset_for_height(1.2, 20.0, 3, 2.2)
@@ -203,7 +203,7 @@ def test_bushing_reaction_sign_matches_joints(scene):
 
 
 def test_ground_reaction_carries_the_whole_weight(scene):
-    res = me.build_scissor_lift(scene, stages=2, sides=1, angle=35.0)
+    res = me.build_scissor_lift(scene, stages=2, sides=1, angle=35.0, loop_closure="rigid")
     model = MbdModel(scene, res["root"][0])
     v = model.solve_static()
     weight = sum(md.body_mass_properties(scene.GetPrimAtPath(p)).mass for p in res["bodies"]) * G

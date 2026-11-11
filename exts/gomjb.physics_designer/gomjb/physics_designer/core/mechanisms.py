@@ -20,8 +20,9 @@ from __future__ import annotations
 import math
 from typing import Dict, List, Optional
 
-from pxr import Gf, Sdf, Usd, UsdGeom
+from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
 
+from . import bushing as bu
 from . import joints as jt
 from . import math_utils as mu
 from . import modeling as md
@@ -98,6 +99,19 @@ class _Builder:
                             self.wrot(local_rot), parent_path=self.root_path.AppendChild("Joints"))
         self.result["joints"].append(str(j.GetPath()))
         return j
+
+    def finish(self, loop_closure: str = "bushing") -> Dict[str, List[str]]:
+        """Close the build. ``loop_closure`` = "bushing" turns every loop-closing joint
+        (``excludeFromArticulation``) into a bushing sized from the finished mechanism
+        (:func:`bushing.convert`); "rigid" keeps exact joints."""
+        if loop_closure not in ("bushing", "rigid"):
+            raise ValueError("loop_closure must be 'bushing' or 'rigid'")
+        if loop_closure == "bushing":
+            for path in self.result["joints"]:
+                prim = self.stage.GetPrimAtPath(path)
+                if UsdPhysics.Joint(prim).GetExcludeFromArticulationAttr().Get():
+                    bu.convert(prim)
+        return self.result
 
     def anchor(self, parent: Usd.Prim, name: str, local_pos, local_rot=None, kind="mount") -> Usd.Prim:
         a = create_anchor(self.stage, parent, name, self.wpos(self.len(local_pos)), self.wrot(local_rot), kind=kind)
@@ -204,7 +218,8 @@ def build_scissor_lift(stage: Usd.Stage, name: str = "ScissorLift", origin: Leng
                        arm_length: Length = 1.2, angle: Angle = 25.0, width: Length = 0.8,
                        arm_section: Lengths = (0.06, 0.03), sides: int = 2, arm_mass: Mass = 5.0,
                        platform_mass: Mass = 20.0, base_mass: Mass = 60.0, arm_collision: bool = False,
-                       sag_tolerance: Length = 0.002, parent=None) -> Dict[str, List[str]]:
+                       sag_tolerance: Length = 0.002, loop_closure: str = "bushing",
+                       parent=None) -> Dict[str, List[str]]:
     """Multi-stage scissor lift.
 
     Layout in the root frame: arms move in the XZ plane, pins rotate about Y.
@@ -224,6 +239,10 @@ def build_scissor_lift(stage: Usd.Stage, name: str = "ScissorLift", origin: Leng
     The actuator drive is sized from the lifted weight: stiffness keeps the static platform
     sag under ``sag_tolerance`` (m) and damping is critical for the lifted mass reflected onto
     the slider.
+
+    ``loop_closure``: "bushing" (default) makes the loop-closing pins auto-sized bushings
+    (:mod:`bushing`: soft loop closures, which iterative / GPU solvers handle and which split
+    the load over the two sides by stiffness); "rigid" keeps them exact revolute joints.
     """
     if stages < 1:
         raise ValueError("stages must be >= 1")
@@ -303,7 +322,7 @@ def build_scissor_lift(stage: Usd.Stage, name: str = "ScissorLift", origin: Leng
         b.joint(jt.JointSpec("prismatic", name=f"TopSlide{tag}", axis="X", lower=lower, upper=upper),
                 platform, slider_t, (w, y_pin, z_top))
         b.joint(pin(f"TopSliderPin{tag}", loop=True), arms_a[-1], slider_t, (w, y_pin, z_top))
-    return b.result
+    return b.finish(loop_closure)
 
 
 SCISSOR_SLIDER_MASS = 1.0

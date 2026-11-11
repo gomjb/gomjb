@@ -8,7 +8,7 @@ when simulation starts).
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Dict, List, Optional, Sequence, Tuple, Union
 
 from pxr import Gf, Sdf, Usd, UsdPhysics
 
@@ -364,6 +364,111 @@ def _apply_type_specifics(prim: Usd.Prim, spec: JointSpec) -> None:
                 lim.CreateHighAttr().Set(float(hi))
         for dof, drive in spec.d6_drives.items():
             set_drive(prim, dof, drive)
+
+
+# ---------------------------------------------------------------------------------------
+# Bushings
+# ---------------------------------------------------------------------------------------
+BUSHING_ATTR = "designer:bushing"
+
+
+def joint_free_axes(prim: Usd.Prim) -> List[str]:
+    """Free DOFs of a joint as D6 names in the joint frame (a revolute about Y -> ["rotY"])."""
+    if prim.IsA(UsdPhysics.FixedJoint):
+        return []
+    if prim.IsA(UsdPhysics.RevoluteJoint) or prim.IsA(UsdPhysics.PrismaticJoint):
+        rev = prim.IsA(UsdPhysics.RevoluteJoint)
+        typed = UsdPhysics.RevoluteJoint(prim) if rev else UsdPhysics.PrismaticJoint(prim)
+        return [("rot" if rev else "trans") + (typed.GetAxisAttr().Get() or "X").upper()]
+    if prim.IsA(UsdPhysics.SphericalJoint):
+        return ["rotX", "rotY", "rotZ"]
+    if prim.IsA(UsdPhysics.DistanceJoint):
+        raise ValueError(f"{prim.GetPath()}: a distance joint has no bushing equivalent")
+    free = []
+    for dof in D6_DOFS:  # D6: every axis that is not locked
+        locked = False
+        if prim.HasAPI(UsdPhysics.LimitAPI, dof):
+            lim = UsdPhysics.LimitAPI(prim, dof)
+            lo, hi = lim.GetLowAttr().Get(), lim.GetHighAttr().Get()
+            locked = lo is not None and hi is not None and lo > hi
+        if not locked:
+            free.append(dof)
+    return free
+
+
+def bushing_spec(free: Sequence[str] = ("rotZ",), linear_stiffness: float = 1.0e7,
+                 angular_stiffness: float = 2.0e3, linear_damping: Optional[float] = None,
+                 angular_damping: Optional[float] = None, name: Optional[str] = None,
+                 collision_enabled: bool = False) -> JointSpec:
+    """A bushing in place of a joint: a D6 spring-damper, stiff on the axes the joint would
+    constrain and zero on its ``free`` axes (the Adams / RecurDyn bushing, and the soft loop
+    closure MuJoCo uses).  As a soft constraint it keeps PhysX GPU dynamics stable where a
+    rigid loop closure diverges, and redundant load paths split by stiffness.
+
+    Angular stiffness is per degree (PhysX drive convention).  Values are in the caller's
+    units: stage units for :func:`create_joint`, SI when passed through :func:`spec_from_si`
+    (template builders).  Damping defaults to stiffness / 1000 (a 1 ms time constant).
+    """
+    unknown = set(free) - set(D6_DOFS)
+    if unknown:
+        raise ValueError(f"unknown bushing axes {sorted(unknown)}")
+    drives = {}
+    for dof in D6_DOFS:
+        if dof in free:
+            continue
+        linear = dof.startswith("trans")
+        k = float(linear_stiffness if linear else angular_stiffness)
+        c = linear_damping if linear else angular_damping
+        drives[dof] = DriveSpec(stiffness=k, damping=k * 1e-3 if c is None else float(c), target_position=0.0)
+    return JointSpec("d6", name=name, collision_enabled=collision_enabled,
+                     exclude_from_articulation=True, d6_drives=drives)
+
+
+def mark_bushing(prim: Usd.Prim) -> Usd.Prim:
+    prim.CreateAttribute(BUSHING_ATTR, Sdf.ValueTypeNames.Bool, custom=True).Set(True)
+    return prim
+
+
+def is_bushing(prim: Usd.Prim) -> bool:
+    attr = prim.GetAttribute(BUSHING_ATTR)
+    return bool(attr and attr.Get())
+
+
+def convert_to_bushing(joint: Usd.Prim, linear_stiffness: float = 1.0e7, angular_stiffness: float = 2.0e3,
+                       linear_damping: Optional[float] = None, angular_damping: Optional[float] = None) -> Usd.Prim:
+    """Replace ``joint`` in place by a bushing with the same bodies, frame and free axes.
+
+    Stage units, angular stiffness per degree.  Only undriven joints convert (a drive or motion
+    is an actuator, which a bushing cannot carry); a damping-only drive is dropped.  A tree
+    joint of an articulation is refused: cutting it apart would change the mechanism — convert
+    loop-closing (``excludeFromArticulation``) joints, which is where bushings help.
+    """
+    if not joint.IsA(UsdPhysics.Joint):
+        raise ValueError(f"{joint.GetPath()} is not a joint")
+    if is_bushing(joint):
+        return joint
+    for dof in ("linear", "angular") + D6_DOFS:
+        if joint.HasAPI(UsdPhysics.DriveAPI, dof) and                 float(UsdPhysics.DriveAPI(joint, dof).GetStiffnessAttr().Get() or 0.0) > 0.0:
+            raise ValueError(f"{joint.GetPath()} is driven: convert only undriven joints")
+    if any(a.GetName().startswith("designer:motion") for a in joint.GetAuthoredAttributes()):
+        raise ValueError(f"{joint.GetPath()} carries a motion: convert only undriven joints")
+    free = joint_free_axes(joint)
+    j = UsdPhysics.Joint(joint)
+    b0, b1 = joint_bodies(joint)
+    if not j.GetExcludeFromArticulationAttr().Get():
+        from . import physics as ph
+
+        if any(b is not None and ph.articulation_root_of(b) is not None for b in (b0, b1)):
+            raise ValueError(f"{joint.GetPath()} is an articulation tree joint; a bushing here would cut "
+                             "the articulation apart. Convert loop-closing joints (excludeFromArticulation).")
+    (p0, r0), _ = joint_world_frames(joint)
+    collision = bool(j.GetCollisionEnabledAttr().Get())
+    stage = joint.GetStage()
+    path = joint.GetPath()
+    stage.RemovePrim(path)
+    spec = bushing_spec(free, linear_stiffness, angular_stiffness, linear_damping, angular_damping,
+                        name=path.name, collision_enabled=collision)
+    return mark_bushing(create_joint(stage, spec, b0, b1, p0, r0, parent_path=path.GetParentPath()))
 
 
 def _auto_name(joint_type: str, body0, body1) -> str:

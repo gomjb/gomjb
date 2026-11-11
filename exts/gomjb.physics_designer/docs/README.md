@@ -161,12 +161,53 @@ xformOp 정밀도는 유지됩니다. 자식과 부모를 함께 선택하면 �
 (스케일·부모 회전 포함) 시뮬레이션 시작 시 물체가 튀는 현상이 없습니다.
 조인트 생성 후 body를 옮겼다면 조인트를 선택하고 *Realign selected joints* 를 누르세요.
 
+**부싱 — 조인트를 대신하는 스프링-댐퍼 (Joint model)**
+
+부싱은 조인트 대신 두 body를 6자유도 스프링-댐퍼로 잇습니다. 조인트가 막는 축은 강성이 높고,
+조인트가 허용하는 축은 강성이 0입니다. 예를 들어 Y축 회전 핀을 부싱으로 바꾸면 병진 3축과 회전 X·Z는 강성,
+회전 Y는 0입니다. USD에서는 막는 축마다 드라이브(target 0)를 단 D6 조인트(`excludeFromArticulation`)이고,
+`designer:bushing = true` 표시와 함께 `designer:bushing:sizing`에 강성 산정 근거가 기록됩니다.
+
+강체 루프 닫힘은 반복 솔버, 특히 PhysX GPU 솔버가 가장 수렴하기 어려워하는 구속입니다. 부싱은 그 구속을 연성
+구속으로 바꿉니다(MuJoCo가 모든 구속을 연성으로 다루는 것과 같은 방식이고, Adams·RecurDyn이 과구속 모델에 권하는 방법).
+
+*Joint model* 선택:
+* **Auto (기본):** 구동되지 않는 조인트가 **루프를 닫을 때만** 부싱이 됩니다. 루프를 닫는다는 것은 두 body가 이미
+  다른 조인트로 이어져 있거나, 둘 다 지면에 연결돼 있다는 뜻입니다. 트리 조인트는 정확한 조인트로 남아
+  articulation의 축소좌표 정확성을 유지하고, 루프 닫힘만 연성이 됩니다.
+* **Bushing:** 구동되지 않는 모든 조인트가 부싱이 됩니다.
+* **Rigid joint:** 항상 정확한 조인트로 만듭니다(이전 동작).
+
+드라이브나 모션이 있는 조인트는 액추에이터라서 항상 조인트로 남습니다. 이미 만든 조인트는
+*Convert selected to bushing* 으로 바꿀 수 있습니다(Undo 가능).
+
+**강성 자동 산정** (`core/bushing.py`의 `auto_stiffness`). 기준은 그 조인트가 속한 기구, 즉 조인트로 이어진
+동적 body들입니다(지면을 거쳐 이어지는 다른 기구는 제외).
+
+| 항목 | 식 | 기본 허용치 |
+|---|---|---|
+| 병진 강성 | k = M·g / δ (기구 전체 무게가 처짐 δ를 만들도록) | δ = 0.1 mm |
+| 회전 강성 | k_θ = M·g·L / θ (L = 기구 바운딩 박스 대각선) | θ = 0.01° |
+| 감쇠 | c = 2ζ·√(k·m_eff), m_eff = 두 body의 환산질량(회전은 환산 관성) | ζ = 1 (임계감쇠) |
+
+즉 기구 전체 무게가 걸려도 부싱이 허용치 이상 처지지 않을 만큼 강하게 잡습니다. 그래서 조인트처럼 동작하지만
+여전히 강체 구속이 아닌 스프링입니다. PhysX 드라이브는 암시적(implicit) 적분이라 타임스텝에 관계없이 안정하고,
+`sizing` 기록의 `omega*dt`는 부싱의 고유진동수가 스텝 주파수보다 얼마나 높은지 보여 줍니다.
+
+부싱에서 생기는 오차는 처짐만큼입니다. 실측(정확해석기, 3단 시저)에서 δ = 0.1 mm일 때 액추에이터 힘 오차는
+약 1e-4이고, δ를 1/10로 줄이면 오차도 1/10이 됩니다.
+좌/우 하중 분배는 강성을 따릅니다. 다만 Auto 모드에서는 루프 닫힘만 부드럽고 트리 핀은 강체여서,
+양쪽이 닫는 루프가 다른 2면 시저는 분배가 대칭이 아닙니다(1.3%). 구조물처럼 모든 핀의 강성으로
+반력을 나누려면 정확해석기의 `bushings` 모드를 쓰세요.
+
 **Newton 엔진을 쓸 때 (`isaac-sim.newton.bat`)**
 * body끼리 연결된 조인트는 반드시 articulation에 속해야 합니다 → 기구의 루트 prim에 *Articulation root* 적용.
 * articulation 안에서는 **Base = 부모(루트 쪽), Action = 자식** 순서로 고르세요. 반대면 Newton이
   `Reversed joints are not supported` 로 초기화를 거부합니다.
 * 루프를 닫는 조인트는 *Exclude from artic.* 로 빼고, 회전(revolute) 조인트로 닫으세요
   (Newton의 MuJoCo 솔버는 prismatic 루프 닫힘을 지원하지 않습니다).
+* **부싱(D6) 루프 닫힘도 Newton에서는 쓸 수 없습니다.** Joint model을 *Rigid joint* 로, 시저 템플릿은
+  `loop_closure = rigid` 로 만드세요. MuJoCo의 구속은 원래 연성이라 부싱이 필요하지 않습니다.
 
 ### 2.5 Physics properties (물리 속성)
 Rigid / Kinematic / Collider only (근사: none·convexHull·convexDecomposition·meshSimplification·
@@ -197,6 +238,8 @@ articulation** 이며, 조인트는 body0 = 부모, body1 = 자식입니다.
 시저 리프트는 폐루프 기구입니다. 일반(maximal) 조인트로 만들면 기구 배율(3단·20°에서 약 8배) 때문에
 반사 질량이 극단적으로 커져 PhysX 반복 솔버가 버티지 못하고 무너집니다(실측: 핀이 4 cm까지 벌어짐).
 그래서 트리는 articulation으로 만들고 **루프를 닫는 회전 핀만 `excludeFromArticulation`** 으로 뺐습니다.
+`loop_closure` 파라미터의 기본값은 `bushing`입니다. 이 경우 루프를 닫는 핀은 완성된 기구 기준으로
+강성을 자동 산정한 부싱이 됩니다. `rigid`를 쓰면 정확한 revolute 핀으로 닫으며, Newton에서는 이쪽을 써야 합니다.
 * 하부 `Actuator_*` prismatic 드라이브의 target을 음수로 줄수록 리프트가 올라갑니다.
   `mechanisms.scissor_slider_offset_for_height()` 가 목표 핀 높이에 해당하는 target을 계산합니다.
 * 액추에이터 강성/감쇠는 하중과 기구 배율에서 자동 계산됩니다. `sag_tolerance`(기본 2 mm)는
@@ -436,5 +479,7 @@ set ISAAC=E:\isaac-sim-standalone-6.1.0-windows-x86_64
   약간의 떨림이 있을 수 있습니다. Kit 뷰포트 자체 스냅 기능과 함께 쓰는 것은 권장하지 않습니다.
 * 템플릿은 Z-up 기준으로 작성되며 Y-up 스테이지에서는 루트를 회전시켜 배치합니다.
 * 드라이브 stiffness 단위는 PhysX 규약을 따릅니다(각도 드라이브는 deg 기준).
-* PhysX GPU 물리에서 폐루프 articulation(시저)과 다른 articulation을 한 씬에 두면 발산합니다(Isaac Sim 6.1 실측).
-  디자이너가 만드는 씬은 CPU 물리이고, 검증기가 GPU 씬에서 이를 경고·수정합니다.
+* PhysX GPU 물리에서 **강체** 루프 닫힘을 가진 articulation(시저)과 다른 articulation을 한 씬에 두면 발산합니다
+  (Isaac Sim 6.1 실측). 디자이너가 만드는 씬은 CPU 물리이고, 검증기가 GPU 씬에서 이를 경고·수정합니다.
+  루프 닫힘을 부싱으로 하면 이 경고는 나오지 않습니다. 다만 **부싱 루프의 GPU 안정성은 아직 Isaac Sim에서
+  실측하지 않았습니다.** Kit 테스트 `test_bushing_scissor_on_gpu_dynamics`가 이것을 확인합니다.

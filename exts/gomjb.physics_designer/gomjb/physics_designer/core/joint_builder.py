@@ -209,11 +209,19 @@ class JointPicker:
         return self.picks["point"], jt.frame_for_world_axis(self.axis(), "Z")
 
     def create(self, stage: Usd.Stage, properties: Optional[jt.JointSpec] = None,
-               parent_path=None) -> Usd.Prim:
+               parent_path=None, model: str = "auto", deflection: float = 1.0e-4,
+               angle_deflection: float = 0.01, damping_ratio: float = 1.0) -> Usd.Prim:
         """Author the joint; ``properties`` carries limits, drive, break and collision settings
-        (stage units); its type and axis are set here (RecurDyn: the joint axis is Z)."""
+        (stage units); its type and axis are set here (RecurDyn: the joint axis is Z).
+
+        ``model`` (see :mod:`bushing`): "auto" makes an undriven loop-closing joint a bushing with
+        auto-sized stiffness, "bushing" every undriven joint, "rigid" none. Tolerances in SI."""
+        from . import bushing as bu
+
         if self.step is not None:
             raise ValueError(f"not complete: {self.prompt()}")
         spec = replace(properties or jt.JointSpec(), joint_type=JOINT_TYPES[self.kind], axis="Z")
         pos, rot = self.frame()
-        return jt.create_joint(stage, spec, self.base, self.action, pos, rot, parent_path)
+        return bu.create_joint(stage, spec, self.base, self.action, pos, rot, parent_path, mode=model,
+                               deflection=deflection, angle_deflection=angle_deflection,
+                               damping_ratio=damping_ratio)

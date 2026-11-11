@@ -146,7 +146,7 @@ class AnalysisSection:
         from ..core.mbd import MbdModel  # needs exudyn ([python.pipapi])
 
         model = MbdModel(self._w._stage(), path, redundancy=self._redundancy.value)
-        if static and model.redundancy == "release" and model.dof > 0:
+        if static and model.redundancy == "release" and model.dof > 0 and not model.has_bushings:
             raise ValueError(f"{model.dof} free DOF with the drives locked - static equilibrium needs "
                              "a drive (stiffness > 0) on every free axis")
         return model

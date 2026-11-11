@@ -40,6 +40,8 @@ def _has_closed_loop_articulation(stage: Usd.Stage) -> bool:
     for prim in stage.Traverse():
         if not prim.IsA(UsdPhysics.Joint) or not UsdPhysics.Joint(prim).GetExcludeFromArticulationAttr().Get():
             continue
+        if jt.is_bushing(prim):  # a soft loop closure: what keeps the GPU solver stable
+            continue
         b0, b1 = jt.joint_bodies(prim)
         if b0 is not None and b1 is not None:
             r0, r1 = ph.articulation_root_of(b0), ph.articulation_root_of(b1)
@@ -143,12 +145,28 @@ def _check_joint(joint: Usd.Prim, pos_tol: float, rot_tol: float) -> List[Issue]
                                         "articulations to the world with a fixed joint only, so this joint is "
                                         "simulated outside the articulation and its DOF/forces are not reported. "
                                         "Fix a base link to the world and put this joint on the base link."))
+    if j.GetExcludeFromArticulationAttr().Get() and not jt.is_bushing(joint) and b0 is not None \
+            and b1 is not None and not _is_driven(joint) and not joint.IsA(UsdPhysics.DistanceJoint):
+        r0, r1 = ph.articulation_root_of(b0), ph.articulation_root_of(b1)
+        if r0 is not None and r1 is not None and r0.GetPath() == r1.GetPath():
+            out.append(Issue(INFO, path, "Rigid loop-closing joint: iterative solvers (PhysX GPU) converge poorly "
+                                         "on rigid loop closures. A bushing (auto-sized stiffness) is a soft "
+                                         "closure that holds the loop. Keep it rigid for Newton, whose MuJoCo "
+                                         "solver closes loops with revolute joints only.", fix="bushing"))
     if joint.IsA(UsdPhysics.RevoluteJoint) or joint.IsA(UsdPhysics.PrismaticJoint):
         typed = UsdPhysics.RevoluteJoint(joint) if joint.IsA(UsdPhysics.RevoluteJoint) else UsdPhysics.PrismaticJoint(joint)
         lo, hi = typed.GetLowerLimitAttr().Get(), typed.GetUpperLimitAttr().Get()
         if lo is not None and hi is not None and lo > hi:
             out.append(Issue(WARNING, path, f"Lower limit {lo} > upper limit {hi}."))
     return out
+
+
+def _is_driven(joint: Usd.Prim) -> bool:
+    for name in ("linear", "angular") + jt.D6_DOFS:
+        if joint.HasAPI(UsdPhysics.DriveAPI, name) and \
+                float(UsdPhysics.DriveAPI(joint, name).GetStiffnessAttr().Get() or 0.0) > 0.0:
+            return True
+    return any(a.GetName().startswith("designer:motion") for a in joint.GetAuthoredAttributes())
 
 
 def apply_fix(stage: Usd.Stage, issue: Issue) -> bool:
@@ -166,6 +184,11 @@ def apply_fix(stage: Usd.Stage, issue: Issue) -> bool:
         return bool(ph.apply_collision([prim], approximation="convexHull"))
     if issue.fix == "convex_hull":
         UsdPhysics.MeshCollisionAPI.Apply(prim).CreateApproximationAttr().Set("convexHull")
+        return True
+    if issue.fix == "bushing":
+        from . import bushing as bu
+
+        bu.convert(prim)
         return True
     if issue.fix == "cpu_dynamics":
         ph.set_cpu_dynamics(prim)
