@@ -86,7 +86,7 @@ class MbdModel:
         # SI stiffness -> stage units (force / length, torque / rad)
         self._k = (bushing_stiffness[0] * self.si["length"] / self.si["force"],
                    bushing_stiffness[1] / self.si["torque"])
-        self.notes: List[str] = []
+        self.notes: Dict[str, List[str]] = {}  # what the analysis leaves out -> the joints concerned
         self.released: List[Tuple[str, str]] = []
         self.joints: Dict[str, MbdJoint] = {}
         self.bodies: Dict[str, int] = {}
@@ -99,13 +99,19 @@ class MbdModel:
         root = stage.GetPrimAtPath(self.root_path)
         if not root:
             raise ValueError(f"{self.root_path} does not exist")
+        weight = 0.0
         for prim in Usd.PrimRange(root):
             if not _is_dynamic_body(prim):
                 continue
+            inertia = _inertia(prim, RigidBodyInertia)
+            weight += inertia.mass * float(np.linalg.norm(gravity))
             self.bodies[str(prim.GetPath())] = mbs.CreateRigidBody(
-                name=prim.GetName(), inertia=_inertia(prim, RigidBodyInertia), gravity=list(gravity),
+                name=prim.GetName(), inertia=inertia, gravity=list(gravity),
                 referencePosition=list(tf.world_position(prim)),
                 referenceRotationMatrix=_rot_matrix(mu.rotation_of(tf.world_matrix(prim))))
+        # Newton's absolute residual tolerance (stage force units): negligible against the loads, yet
+        # above the round-off of stiff bushings, so re-solving an equilibrium converges at once
+        self._abs_tol = 1e-9 * (weight or 1.0)
         if not self.bodies:
             raise ValueError(f"no dynamic rigid bodies under {self.root_path}")
 
@@ -132,7 +138,7 @@ class MbdModel:
         j = UsdPhysics.Joint(prim)
         name = prim.GetName()
         if j.GetJointEnabledAttr().Get() is False:
-            self.notes.append(f"{name}: disabled joint skipped")
+            self.notes.setdefault("disabled joints skipped", []).append(name)
             return
         b0, b1 = jt.joint_bodies(prim)
         (p0, r0), _ = jt.joint_world_frames(prim)
@@ -146,9 +152,9 @@ class MbdModel:
                 drives[axis] = math.radians(target) if axis >= 3 else target
                 constrained[axis] = 1
             else:
-                self.notes.append(f"{name}: damping-only drive ignored")
+                self.notes.setdefault("damping-only drives ignored", []).append(name)
         if _has_limits(prim):
-            self.notes.append(f"{name}: joint limits not enforced")
+            self.notes.setdefault("joint limits not enforced", []).append(name)
         markers, rotations, indices = [], [], []
         for body in (b0, b1):
             index, body_frame = self._side(body)
@@ -204,7 +210,7 @@ class MbdModel:
                     mbs.SetObjectParameter(mj.index, "constrainedAxes", list(mj.constrained))
         mbs.Assemble()
         if self.redundant:
-            self.notes.append(f"{self.redundant} redundant constraint(s) could not be released")
+            self.notes["redundant constraints that could not be released"] = [str(self.redundant)]
 
     # -- drives -------------------------------------------------------------------------
     @property
@@ -231,7 +237,7 @@ class MbdModel:
         ss.staticSolver.verboseMode = 0
         ss.timeIntegration.verboseMode = 0
         ss.staticSolver.newton.relativeTolerance = 1e-10
-        ss.staticSolver.newton.absoluteTolerance = 1e-12
+        ss.staticSolver.newton.absoluteTolerance = self._abs_tol
         ss.linearSolver.solverType = self._exu.LinearSolverType.EigenDense
         return ss
 
@@ -364,18 +370,18 @@ class MbdModel:
 
     def report(self) -> str:
         bushings = [n for n, m in self.joints.items() if m.bushing]
-        lines = [f"bodies {len(self.bodies)}, joints {len(self.joints)}, drives: "
-                 f"{', '.join(self.drive_names) or 'none'}, redundancy handling: {self.redundancy}"]
+        lines = [f"bodies {len(self.bodies)}, joints {len(self.joints)}, drives: {', '.join(self.drive_names) or 'none'}"]
         if bushings:
-            lines.append(f"{len(bushings)} joint(s) as stiff bushings (k = {self._k[0] * self.si['force'] / self.si['length']:.3g}"
-                         f" N/m, {self._k[1] * self.si['torque']:.3g} N*m/rad): load split follows stiffness")
+            lines.append(f"redundancy handling: bushings - {len(bushings)} joint(s) as stiff bushings "
+                         f"(k = {self._k[0] * self.si['force'] / self.si['length']:.3g} N/m, "
+                         f"{self._k[1] * self.si['torque']:.3g} N*m/rad), load split follows stiffness")
         else:
-            lines.append(f"mobility with drives locked: {self.dof}")
+            lines.append(f"redundancy handling: release, mobility with drives locked: {self.dof}")
         if self.released:
-            lines.append("released redundant equations: " + ", ".join(f"{j}.{a}" for j, a in self.released))
             lines.append("-> reactions over redundant load paths are not unique (totals are exact); "
                          "use redundancy='bushings' for a stiffness-based split")
-        lines += self.notes
+            lines.append("released redundant equations: " + ", ".join(f"{j}.{a}" for j, a in self.released))
+        lines += [f"{what}: {', '.join(items)}" for what, items in self.notes.items()]
         return "\n".join(lines)
 
 

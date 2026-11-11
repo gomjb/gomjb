@@ -16,8 +16,17 @@
   Motion, Exudyn and the Ajou University group's solver — only what official documentation,
   original papers or source code confirm.
 
+### Fixed
+- `bushings` sweeps failed ("SolveStatic terminated due to errors"): re-solving an equilibrium could
+  not meet the 1e-12 absolute residual tolerance with stiff bushings; the tolerance is now 1e-9 of
+  the model weight.
+- Sweeps running towards smaller drive values drew no curve (XYPlot needs increasing x): plotted
+  samples are ordered by x.
+
 ### Changed
 - `Recording.x_label` names the abscissa (time, or the drive value of a sweep) in plots and CSV.
+- Analysis summary lists the results first and the solver report below, wrapped; solver notes are
+  grouped per kind ("joint limits not enforced: Actuator_L, ...").
 - Analysis target field is "Mechanism".
 
 ## [0.3.0] - 2026-11-11

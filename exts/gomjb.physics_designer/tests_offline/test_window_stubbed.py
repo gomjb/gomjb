@@ -279,7 +279,11 @@ def test_exact_solver_sweep_and_bushings(env, tmp_path):
     assert "Swept Actuator over 2 points" in status(win)
     plot = a._plot
     assert plot.legends == ["Actuator"] and a.recording.x_label == "Actuator [m]"
-    for deg, force in zip((40.0, 50.0), plot.y_data[0]):
+    # this stroke runs downwards (raising the lift); XYPlot only draws increasing x
+    assert targets[1] < targets[0] and plot.x_data[0] == sorted(targets)
+    assert plot.y_data[0] == a.recording.channels["force:Actuator"][::-1]
+    assert a._summary_model.as_string.startswith("Actuator: min")  # results first, report below
+    for deg, force in zip((40.0, 50.0), a.recording.channels["force:Actuator"]):
         assert -force == pytest.approx(me.scissor_actuator_force(1.2, deg, 1, 20.0, 5.0, sides=1), rel=1e-6)
     assert "redundancy handling: release" in a._summary_model.as_string
     a._csv.model.set_value(str(tmp_path / "sweep.csv"))

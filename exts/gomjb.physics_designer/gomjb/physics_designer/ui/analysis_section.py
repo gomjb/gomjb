@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import os
+import textwrap
 import time
 from typing import Dict, List, Optional, Tuple
 
@@ -16,6 +17,7 @@ PLOTS = ["DOF forces", "DOF positions", "Joint reaction |F|"]
 REDUNDANCY = ["release", "bushings"]
 # PhysX records the incoming joint force per link, the exact solver the reaction per joint
 REACTION_PREFIXES = ("link_force:", "joint_force:")
+SUMMARY_WIDTH = 68  # characters per summary line (the field does not wrap)
 
 # Categorical series colors (dark-mode steps, fixed order), validated on the dark plot surface #252525:
 # lightness band, chroma, adjacent CVD dE >= 8.4, normal-vision dE >= 19.3, contrast >= 3:1.
@@ -55,7 +57,7 @@ class AnalysisSection:
                             ("Stop", self.stop)])
                 hint("Exact solver (Exudyn): every joint an exact constraint, loop closures included; "
                      "driven axes are prescribed motions whose multipliers are the actuator forces. "
-                     "Solve static equilibrium at the drive targets, or sweep one drive.")
+                     "Solve static equilibrium at the drive targets, or sweep drives along a stroke.")
                 self._redundancy = ComboInput(
                     "Redundant", REDUNDANCY,
                     tooltip="release: dependent equations are released and listed (Adams / MotionSolve "
@@ -210,24 +212,28 @@ class AnalysisSection:
         return [SERIES_COLORS[self._slots[n]] for n in names]
 
     def refresh_plot(self):
+        """Plot and summary: the per-series results first, then the solver report wrapped below."""
         names, ys, units = self.series()
         rec = self.recording
-        lines = [self._report] if self._report else []
+        report = [w for line in self._report.splitlines() for w in textwrap.wrap(line, SUMMARY_WIDTH, subsequent_indent="  ")]
         if not names:
-            lines.append("No data (record a simulation or run the exact solver).")
-            self._summary_model.set_value("\n".join(lines))
+            self._summary_model.set_value("\n".join(["No data (record a simulation or run the exact solver)."] + report))
             return
+        lines = []
         if len(names) > len(SERIES_COLORS):  # never cycle colors: narrow the selection instead
             lines.append(f"Showing {len(SERIES_COLORS)} of {len(names)} series - narrow the name filter.")
             names, ys, units = (v[:len(SERIES_COLORS)] for v in (names, ys, units))
-        self._plot_spec = dict(x_data=[list(rec.time)] * len(ys), y_data=[list(y) for y in ys], legends=names,
-                               plot_colors=self._colors(names), x_label=rec.x_label, **_axes(rec.time, ys))
+        # XYPlot interpolates between consecutive x values and assumes they increase: a sweep can run downwards
+        order = sorted(range(len(rec.time)), key=rec.time.__getitem__)
+        xs = [rec.time[i] for i in order]
+        self._plot_spec = dict(x_data=[xs] * len(ys), y_data=[[y[i] for i in order] for y in ys], legends=names,
+                               plot_colors=self._colors(names), x_label=rec.x_label, **_axes(xs, ys))
         self._plot_frame.rebuild()
         for name, y, unit in zip(names, ys, units):
             vals = [v for v in y if not math.isnan(v)]
             if vals:
                 lines.append(f"{name}: min {min(vals):.4g}  max {max(vals):.4g}  final {vals[-1]:.4g} {unit}")
-        self._summary_model.set_value("\n".join(lines))
+        self._summary_model.set_value("\n".join(lines + report))
 
     def export_csv(self) -> Optional[str]:
         rec = self.recording

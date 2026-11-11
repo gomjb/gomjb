@@ -177,6 +177,10 @@ def test_bushings_give_a_symmetric_split_with_the_same_total(scene):
     # bushings deflect (F/k at each of the pins in series), which changes the arm angle slightly
     assert left + right == pytest.approx(total, rel=1e-3)
     assert left == pytest.approx(right, rel=1e-3)  # symmetric structure, symmetric load
+    # re-solving an equilibrium (unchanged targets) must converge at once: sweeps start that way
+    again = model.solve_static()
+    assert again["force:Actuator_L"] == pytest.approx(v["force:Actuator_L"], rel=1e-9)
+    assert len(model.static_sweep(["Actuator_L", "Actuator_R"], [target, 0.0])) == 2
     # the released-equation model gives the same total but an arbitrary split
     exact = MbdModel(scene, res["root"][0])
     exact.set_drive("Actuator_L", target)
