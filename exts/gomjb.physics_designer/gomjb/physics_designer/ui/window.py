@@ -21,6 +21,7 @@ from ..core import units as un
 from ..core import validation as va
 from ..core.stage_utils import prims_from_paths
 from .analysis_section import AnalysisSection
+from .joint_section import JointSection
 from .live_snap import LiveSnap
 from .modeler_section import ModelerSection
 from .widgets import (BoolInput, ComboInput, FloatInput, IntInput, StringInput, UnitFloat, Units, UnitVec3,
@@ -28,21 +29,8 @@ from .widgets import (BoolInput, ComboInput, FloatInput, IntInput, StringInput, 
 
 WINDOW_TITLE = "Physics Designer"
 UNITS_SETTING = "/persistent/exts/gomjb.physics_designer/unitSystem"
-_LINEAR_JOINTS = ("prismatic", "distance")
 
-_AXIS_ITEMS = ["X", "Y", "Z", "-X", "-Y", "-Z"]
 _FACE_ITEMS = ["+Z", "-Z", "+X", "-X", "+Y", "-Y"]
-_JOINT_LOCATIONS = {
-    "Body1 origin": "body1",
-    "Body0 origin": "body0",
-    "Midpoint": "midpoint",
-    "Body1 bbox center": "body1_bbox",
-    "Body0 bbox center": "body0_bbox",
-    "Selected anchor": "anchor",
-    "Custom (world)": "custom",
-}
-_JOINT_AXES = ["Z", "Y", "X", "-Z", "-Y", "-X", "Anchor frame", "Body0 local X", "Body0 local Y",
-               "Body0 local Z", "Custom (world)"]
 _ANCHOR_LOCATIONS = ["Pivot", "BBox center", "+X face", "-X face", "+Y face", "-Y face", "+Z face", "-Z face",
                      "Custom (world)"]
 
@@ -59,6 +47,7 @@ class PhysicsDesignerWindow(ui.Window):
         saved = carb.settings.get_settings().get(UNITS_SETTING)
         self.units = Units(saved if saved in un.SYSTEMS else "MKS")
         self.modeler = ModelerSection(self)
+        self.joints = JointSection(self)
         self.analysis = AnalysisSection(self)
         self._stage_sub = omni.usd.get_context().get_stage_event_stream().create_subscription_to_pop(
             self._on_stage_event, name="gomjb.physics_designer.window"
@@ -68,6 +57,7 @@ class PhysicsDesignerWindow(ui.Window):
 
     def destroy(self):
         self._live_snap.stop()
+        self.joints.cancel()
         self.analysis.stop(refresh=False)
         self._stage_sub = None
         super().destroy()
@@ -161,7 +151,7 @@ class PhysicsDesignerWindow(ui.Window):
                     self._build_move()
                     self._build_snap()
                     self._build_anchor()
-                    self._build_joint()
+                    self.joints.build()
                     self._build_physics()
                     self._build_templates()
                     self._build_validate()
@@ -378,134 +368,6 @@ class PhysicsDesignerWindow(ui.Window):
             return [str(sn.anchor_owner(prims[0]).GetPath())] if prims and sn.is_anchor(prims[0]) else []
 
         self._run("Connect anchors", op, min_sel=2, modify=modify)
-
-    # ---------------------------------------------------------------------------------
-    # Joints
-    # ---------------------------------------------------------------------------------
-    def _build_joint(self):
-        with section("Joints"):
-            with ui.VStack(spacing=3):
-                hint("Select body0 then body1 (one prim = joint to world). Selecting two anchors creates the "
-                     "joint between their owners at the first anchor; pick World axis 'Anchor frame' to use the "
-                     "anchor orientation (Axis token = anchor axis, usually Z).")
-                self._j_type = ComboInput("Type", list(jt.JOINT_TYPES), default=1,
-                                          on_changed=lambda v: self.units.refresh_labels())
-                self._j_loc = ComboInput("Location", list(_JOINT_LOCATIONS))
-                self._j_custom = self.units.vec3("Custom position", (0.0, 0.0, 0.0), "length")
-                self._j_axis = ComboInput("World axis", _JOINT_AXES)
-                self._j_custom_axis = Vec3Input("Custom axis", (0, 0, 1))
-                self._j_token = ComboInput("Axis token", ["X", "Y", "Z"],
-                                           tooltip="Joint-frame axis that is mapped onto the world axis "
-                                                   "(with 'Anchor frame' the anchor's own axis)")
-                self._j_limit = BoolInput("Limits", False)
-                self._j_lower = self.units.float("Lower", -90.0, self._jq("length", "angle"), step=1.0)
-                self._j_upper = self.units.float("Upper", 90.0, self._jq("length", "angle"), step=1.0)
-                self._j_drive = BoolInput("Drive", False)
-                self._j_drive_type = ComboInput("Drive type", ["force", "acceleration"])
-                self._j_stiff = self.units.float("Stiffness", 1000.0, self._jq("linear_stiffness", "angular_stiffness"),
-                                                 step=10.0)
-                self._j_damp = self.units.float("Damping", 100.0, self._jq("linear_damping", "angular_damping"),
-                                                step=1.0)
-                self._j_target = self.units.float("Target position", 0.0, self._jq("length", "angle"))
-                self._j_tvel = self.units.float("Target velocity", 0.0, self._jq("velocity", "angular_velocity"))
-                self._j_maxf = self.units.float("Max force (0=inf)", 0.0, self._jq("force", "torque"))
-                self._j_break = self.units.float("Break force (0=never)", 0.0, "force")
-                self._j_break_t = self.units.float("Break torque (0=never)", 0.0, "torque")
-                self._j_collide = BoolInput("Collide bodies", False)
-                self._j_excl = BoolInput("Exclude from artic.", False)
-                self._j_parent = ComboInput("Joint prim under", ["<root>/Joints", "body0", "body1"])
-                self._j_auto_rb = BoolInput("Add RigidBody to bodies", True,
-                                            "Apply RigidBodyAPI + colliders to bodies that lack it")
-                button_row([("Create joint", self._create_joint),
-                            ("Realign selected joints", self._realign_joints)])
-
-    def _jq(self, linear: str, angular: str):
-        """Quantity of a joint input: ``linear`` for prismatic / distance joints, else ``angular``."""
-        return lambda: linear if self._j_type.value in _LINEAR_JOINTS else angular
-
-    def _joint_spec(self, stage: Usd.Stage) -> jt.JointSpec:
-        jtype = self._j_type.value
-        spec = jt.JointSpec(jtype, axis=self._j_token.value, collision_enabled=self._j_collide.value,
-                            exclude_from_articulation=self._j_excl.value,
-                            break_force=self._j_break.core(stage) or None,
-                            break_torque=self._j_break_t.core(stage) or None)
-        lower, upper = self._j_lower.core(stage), self._j_upper.core(stage)
-        if self._j_limit.value:
-            if jtype in ("revolute", "prismatic"):
-                spec.lower, spec.upper = lower, upper
-            elif jtype == "spherical":
-                spec.cone0 = spec.cone1 = abs(upper)
-            elif jtype == "distance":
-                spec.min_distance, spec.max_distance = max(0.0, lower), upper
-        if self._j_drive.value:
-            drive = jt.DriveSpec(self._j_drive_type.value, self._j_stiff.core(stage), self._j_damp.core(stage),
-                                 self._j_maxf.core(stage) or None, self._j_target.core(stage),
-                                 self._j_tvel.core(stage))
-            if jtype in ("revolute", "prismatic"):
-                spec.drive = drive
-            elif jtype == "d6":
-                spec.d6_drives = {"rotX": drive}
-        return spec
-
-    def _joint_bodies(self, prims):
-        anchor = next((p for p in prims if sn.is_anchor(p)), None)
-        if len(prims) >= 2 and sn.is_anchor(prims[0]) and sn.is_anchor(prims[1]):
-            return sn.anchor_owner(prims[0]), sn.anchor_owner(prims[1]), prims[0], True
-        bodies = [p for p in prims if not sn.is_anchor(p)]
-        if len(bodies) == 1:
-            return None, bodies[0], anchor, False
-        if len(bodies) >= 2:
-            return bodies[0], bodies[1], anchor, False
-        raise ValueError("select one or two bodies")
-
-    def _create_joint(self):
-        def modify(prims):
-            if not self._j_auto_rb.value:
-                return []
-            try:
-                b0, b1, _, _ = self._joint_bodies(prims)
-            except ValueError:
-                return []
-            return [str(b.GetPath()) for b in (b0, b1) if b is not None]
-
-        def op(stage, prims):
-            b0, b1, anchor, anchor_pair = self._joint_bodies(prims)
-            if self._j_auto_rb.value:
-                missing = [b for b in (b0, b1) if b is not None and not b.HasAPI(UsdPhysics.RigidBodyAPI)]
-                if missing:
-                    ph.apply_rigid_body(missing)
-            spec = self._joint_spec(stage)
-            loc = "anchor" if anchor_pair else _JOINT_LOCATIONS[self._j_loc.value]
-            axis_item = self._j_axis.value
-            if axis_item == "Anchor frame":
-                world_axis = "anchor"
-            elif axis_item == "Custom (world)":
-                world_axis = self._j_custom_axis.value
-            elif axis_item.startswith("Body0 local"):
-                ref = b0 if b0 is not None else b1
-                world_axis = tuple(mu.rotation_of(tf.world_matrix(ref)).TransformDir(
-                    mu.AXIS_VECTORS[axis_item[-1]]))
-            else:
-                world_axis = axis_item
-            parent = None
-            if self._j_parent.value == "body0" and b0 is not None:
-                parent = b0.GetPath()
-            elif self._j_parent.value == "body1" and b1 is not None:
-                parent = b1.GetPath()
-            return jt.create_joint_at(stage, spec, b0, b1, location=loc, world_axis=world_axis, anchor=anchor,
-                                      custom_position=self._j_custom.core(stage), parent_path=parent)
-
-        self._run("Create joint", op, min_sel=1, modify=modify, select_result=True)
-
-    def _realign_joints(self):
-        def op(stage, prims):
-            joints = [p for p in prims if p.IsA(UsdPhysics.Joint)]
-            if not joints:
-                raise ValueError("select joint prims")
-            for j in joints:
-                jt.realign_joint(j, keep="body0")
-
-        self._run("Realign joints", op, min_sel=1)
 
     # ---------------------------------------------------------------------------------
     # Physics properties

@@ -34,15 +34,26 @@ class TestPhysicsDesignerWindow(omni.kit.test.AsyncTestCase):
 
     async def test_window_builds_every_section(self):
         # template parameter fields live in a collapsed section and build when it is first expanded
-        for attr in ("_move_step", "_grid", "_anchor_name", "_j_type", "_approx", "_tpl", "_validation_model"):
+        for attr in ("_move_step", "_grid", "_anchor_name", "_approx", "_tpl", "_validation_model"):
             self.assertTrue(hasattr(self.window, attr), attr)
+        self.assertEqual(set(self.window.joints._type_buttons), {"Fixed", "Revolute", "Translational", "Spherical"})
 
-    async def test_create_joint_from_selection(self):
-        self._select("/World/A", "/World/B")
-        self.window._create_joint()
-        joints = [p for p in self.stage.Traverse() if p.IsA(UsdPhysics.RevoluteJoint)]
-        self.assertEqual(len(joints), 1, self.window._status_model.as_string)
-        self.assertTrue(self.stage.GetPrimAtPath("/World/A").HasAPI(UsdPhysics.RigidBodyAPI))
+    async def test_recurdyn_joint_base_action_point(self):
+        """Revolute (Body, Body, Point): base A, action B, point; the joint is created at the last pick."""
+        from ..core import physics as ph
+
+        a, b = (self.stage.GetPrimAtPath(p) for p in ("/World/A", "/World/B"))
+        ph.apply_rigid_body([a, b])
+        joints = self.window.joints
+        joints.start("Revolute")
+        joints.pick(a)
+        joints.pick(b)
+        joints.pick(b, (1.0, 0.0, 0.0))
+        found = [p for p in self.stage.Traverse() if p.IsA(UsdPhysics.RevoluteJoint)]
+        self.assertEqual(len(found), 1, self.window._status_model.as_string)
+        rel = UsdPhysics.Joint(found[0])
+        self.assertEqual([rel.GetBody0Rel().GetTargets()[0], rel.GetBody1Rel().GetTargets()[0]], [a.GetPath(), b.GetPath()])
+        self.assertIsNone(joints.picker)
         omni.kit.undo.undo()
         self.assertFalse([p for p in self.stage.Traverse() if p.IsA(UsdPhysics.RevoluteJoint)])
 

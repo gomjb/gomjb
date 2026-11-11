@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.6.0] - 2026-11-11
+### Changed
+- Joints are created the RecurDyn way: a joint type button (Fixed, Revolute, Translational,
+  Spherical), a creation method (Body, Body, Point[, Direction] / Point[, Direction]) and clicks in
+  the viewport: base body, action body, point, direction. The joint Z axis is the rotation /
+  sliding axis; without a direction it is the working-plane normal. A click near a marker (a link
+  pin) snaps to it, otherwise to the clicked geometry's corners / edge middles / face centers; a
+  click on anything that is not a rigid body picks the ground (`core.joint_builder`).
+- The former selection + location + world-axis joint form is removed; joint properties (limits,
+  drive, break force / torque, collision, articulation exclusion) apply to the next joint.
+
+### Added
+- Viewport picking (`ui.viewport_pick`): a click gesture over the viewport and
+  `viewport_api.request_query` for the clicked prim and surface point (Kit's own picking pattern).
+
 ## [0.5.0] - 2026-11-11
 ### Added
 - Unit system selector (MKS, MMKS, CGS, MTS, IPS; time s, angles deg) for every input and result in

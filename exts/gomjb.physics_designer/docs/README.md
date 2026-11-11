@@ -116,15 +116,27 @@ xformOp 정밀도는 유지됩니다. 자식과 부모를 함께 선택하면 �
    앵커의 소유자(가장 가까운 rigid body 조상, 없으면 부모)가 이동해 두 앵커가 일치합니다.
    *Flip* 은 두 Z축이 마주보게(커넥터 결합) 하고, *Then create joint* 로 그 자리에 바로 조인트 생성.
 
-### 2.4 Joints (조인트 생성)
-* 선택: **body0 → body1** (하나만 선택하면 월드에 고정된 조인트)
-* Type: fixed / revolute / prismatic / spherical / distance / D6
-* Location: body1 원점, body0 원점, 중점, bbox 중심, 선택한 앵커, 직접 입력
-* World axis: ±X/±Y/±Z, 앵커 좌표계, body0의 로컬 축, 임의 벡터
-  *Axis token* 은 조인트 프레임에서 그 방향에 대응시킬 축(USD `physics:axis`)
-* Limits(각도는 deg), Drive(force/acceleration, stiffness, damping, target, max force), Break force,
-  body 간 충돌 여부, articulation 제외, 조인트 prim 위치(`<root>/Joints` / body0 / body1 아래)
-* *Add RigidBody to bodies* : rigid body가 없는 body에 RigidBodyAPI + 충돌체 자동 추가
+### 2.4 Joints (조인트 생성 — RecurDyn 방식)
+[RecurDyn Professional의 조인트 생성 방식](https://help.functionbay.com/2024/RecurDynHelp/Professional/Professional_ch02_s02_06.html)을
+그대로 따릅니다. **조인트 종류 버튼을 누른 뒤 뷰포트에서 차례로 클릭**하면 마지막 클릭에서 조인트가 만들어집니다.
+
+| 종류 | Creation method (첫 번째가 기본) |
+|---|---|
+| Fixed, Spherical | Body, Body, Point / Point |
+| Revolute | Body, Body, Point / Body, Body, Point, Direction / Point / Point, Direction |
+| Translational | Body, Body, Point, Direction / Point, Direction (방향 필수) |
+
+* **Base body → Action body → Point → (Direction)**. Base가 기준(USD body0, articulation 부모),
+  Action이 움직이는 쪽(body1)입니다. 진행 상황은 파란 안내 줄("click the ACTION body" 등)에 나옵니다.
+* **조인트 Z축 = 회전축(revolute) / 이동축(translational).** Direction 단계에서 두 번째 점을 클릭하거나
+  *+X / +Y / +Z*, *Marker Z*(점이 스냅된 마커의 Z축)를 누릅니다. 방향이 없는 방식은 **작업 평면의 법선**(XY → Z)이 축입니다.
+* **Point 스냅**: *Key point* 는 클릭 근처의 마커(링크의 PinA/PinB 핀 중심 등)를 우선 잡고, 없으면 클릭한 형상의
+  꼭짓점·모서리 중점·면 중심 중 가장 가까운 점을 잡습니다(형상이 회전돼 있어도 형상 기준). *Surface* 는 클릭한 표면 점 그대로.
+* **바디가 아닌 것을 클릭하면 Ground**(지면·정적 물체·빈 곳). *Point* 방식은 클릭한 바디가 Action이고, 그 점을
+  포함하는 다른 바디가 Base(없으면 Ground)입니다.
+* 뷰포트 대신 선택으로도 고를 수 있습니다: *Pick from selection*(바디 단계 = 선택한 prim, 점 단계 = 선택한 앵커/prim 원점).
+* 아래 Properties(리밋, 드라이브, Break force/torque, 충돌, articulation 제외, 조인트 prim 위치)는 다음에 만들 조인트에
+  적용됩니다. 리밋·드라이브 단위는 종류를 따릅니다(revolute: deg, translational: 길이).
 
 조인트 프레임은 **하나의 월드 프레임에서 body0/body1의 `localPos/localRot`를 동시에 계산**하므로
 (스케일·부모 회전 포함) 시뮬레이션 시작 시 물체가 튀는 현상이 없습니다.
@@ -132,7 +144,7 @@ xformOp 정밀도는 유지됩니다. 자식과 부모를 함께 선택하면 �
 
 **Newton 엔진을 쓸 때 (`isaac-sim.newton.bat`)**
 * body끼리 연결된 조인트는 반드시 articulation에 속해야 합니다 → 기구의 루트 prim에 *Articulation root* 적용.
-* articulation 안에서는 **body0 = 부모(루트 쪽), body1 = 자식** 순서로 선택해 만드세요. 반대면 Newton이
+* articulation 안에서는 **Base = 부모(루트 쪽), Action = 자식** 순서로 고르세요. 반대면 Newton이
   `Reversed joints are not supported` 로 초기화를 거부합니다.
 * 루프를 닫는 조인트는 *Exclude from artic.* 로 빼고, 회전(revolute) 조인트로 닫으세요
   (Newton의 MuJoCo 솔버는 prismatic 루프 닫힘을 지원하지 않습니다).

@@ -68,23 +68,60 @@ def test_nudge_undo(env):
     assert tf.world_position(a)[2] == pytest.approx(0.0)
 
 
-def test_joint_button_creates_rigid_bodies_and_joint(env):
+def test_recurdyn_joint_base_action_point(env):
+    """Revolute (Body, Body, Point): click base, action, point; the joint appears at the last pick."""
     win, ctx, commands = env
-    select(ctx, "/World/A", "/World/B")
-    win._j_loc.widget.model.select(list(win._j_loc.items).index("Midpoint"))
-    win._j_limit.model.set_value(True)
-    win._j_drive.model.set_value(True)
-    click("Create joint")
-    assert "done" in status(win), status(win)
+    from gomjb.physics_designer.core import physics as ph
+    from gomjb.physics_designer.core import joints as jt
+
+    a, b = (ctx.stage.GetPrimAtPath(p) for p in ("/World/A", "/World/B"))
+    ph.apply_rigid_body([a, b])
+    j = win.joints
+    click("Revolute")
+    assert "Revolute (Body, Body, Point): click the BASE body" in j._prompt_model.as_string
+    j.on_viewport_pick("/World/A", (0.0, 0.03, 0.5))  # a viewport click on A
+    assert "ACTION" in j._prompt_model.as_string and "Base: A" in j._picks_model.as_string
+    j.on_viewport_pick("/World/B", (2.0, 0.03, 0.5))
+    j._limit.model.set_value(True)
+    j._drive.model.set_value(True)
+    j._snap.widget.model.select(list(j._snap.items).index("Surface"))
+    j.on_viewport_pick("/World/B", (1.0, 0.03, 0.0))  # the point: the joint is created now
     joint_path = ctx.selection.paths[0]
     joint = ctx.stage.GetPrimAtPath(joint_path)
-    assert joint.IsA(UsdPhysics.RevoluteJoint)
+    assert joint.IsA(UsdPhysics.RevoluteJoint) and UsdPhysics.RevoluteJoint(joint).GetAxisAttr().Get() == "Z"
+    assert [p.GetPath() for p in jt.joint_bodies(joint)] == [a.GetPath(), b.GetPath()]  # base, action
+    assert list(jt.joint_world_frames(joint)[0][0]) == pytest.approx([1.0, 0.03, 0.0])
     assert UsdPhysics.RevoluteJoint(joint).GetLowerLimitAttr().Get() == -90
     assert joint.HasAPI(UsdPhysics.DriveAPI, "angular")
-    assert ctx.stage.GetPrimAtPath("/World/A").HasAPI(UsdPhysics.RigidBodyAPI)
+    assert j.picker is None and "Created" in j._prompt_model.as_string
     commands.undo()
     assert not ctx.stage.GetPrimAtPath(joint_path)
-    assert not ctx.stage.GetPrimAtPath("/World/A").HasAPI(UsdPhysics.RigidBodyAPI)
+
+
+def test_recurdyn_translational_with_direction_and_ground(env):
+    """Translational (Body, Body, Point, Direction) from the ground; the axis from the +Z button."""
+    win, ctx, _ = env
+    from gomjb.physics_designer.core import physics as ph
+    from gomjb.physics_designer.core import joints as jt
+
+    ph.apply_rigid_body([ctx.stage.GetPrimAtPath("/World/B")])
+    j = win.joints
+    click("Translational")
+    assert j.picker.method == "Body, Body, Point, Direction"
+    j.on_viewport_pick("", None)  # empty space: the ground
+    j.on_viewport_pick("/World/B", (2.0, 0.03, 0.0))
+    select(ctx, "/World/B")
+    click("Pick from selection")  # the point from the selection: B's origin
+    assert "Z axis" in j._prompt_model.as_string and "Base: ground" in j._picks_model.as_string
+    click("+Z")
+    joint = ctx.stage.GetPrimAtPath(ctx.selection.paths[0])
+    assert joint.IsA(UsdPhysics.PrismaticJoint)
+    b0, b1 = jt.joint_bodies(joint)
+    assert b0 is None and b1.GetPath() == "/World/B"
+    rot = jt.joint_world_frames(joint)[0][1]
+    from pxr import Gf
+
+    assert list(Gf.Rotation(rot).TransformDir(Gf.Vec3d(0, 0, 1))) == pytest.approx([0, 0, 1])
 
 
 def test_anchor_connect_and_joint(env):
@@ -321,13 +358,15 @@ def test_unit_system_mmks_everywhere(env, tmp_path):
     click("Get from selection")
     assert win._abs_pos.value[0] == pytest.approx(100.0)
 
-    # joint inputs follow the joint type: degrees for revolute, lengths for prismatic
-    assert win._j_lower.unit_label.text == "deg" and win._j_stiff.unit_label.text == "N*mm/deg"
-    _combo(win._j_type, "prismatic")
-    assert win._j_lower.unit_label.text == "mm" and win._j_stiff.unit_label.text == "N/mm"
-    assert win._j_stiff.value == pytest.approx(1.0)  # the SI number stays: 1000 N*m/deg -> 1000 N/m = 1 N/mm
-    _combo(win._j_type, "revolute")
-    assert win._j_stiff.value == pytest.approx(1.0e6) and win._j_stiff.unit_label.text == "N*mm/deg"
+    # joint inputs follow the joint type: degrees for revolute, lengths for translational
+    j = win.joints
+    assert j._lower.unit_label.text == "deg" and j._stiff.unit_label.text == "N*mm/deg"
+    click("Translational")
+    assert j._lower.unit_label.text == "mm" and j._stiff.unit_label.text == "N/mm"
+    assert j._stiff.value == pytest.approx(1.0)  # the SI number stays: 1000 N*m/deg -> 1000 N/m = 1 N/mm
+    click("Revolute")
+    assert j._stiff.value == pytest.approx(1.0e6) and j._stiff.unit_label.text == "N*mm/deg"
+    j.cancel()
 
     # modeler: a 500 x 300 x 200 mm box is 0.5 x 0.3 x 0.2 m on the stage
     m = win.modeler
