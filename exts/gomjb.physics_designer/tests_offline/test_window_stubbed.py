@@ -301,6 +301,88 @@ def test_exact_solver_sweep_and_bushings(env, tmp_path):
     assert math.isfinite(a._plot.y_max)
 
 
+def test_unit_system_mmks_everywhere(env, tmp_path):
+    """MMKS: inputs show mm and keep their physical value; the stage (metres) gets the same geometry."""
+    win, ctx, _ = env
+    from gomjb.physics_designer.core import mechanisms as me
+    from gomjb.physics_designer.core import modeling as md
+    from gomjb.physics_designer.core import physics as ph
+    from gomjb.physics_designer.core import transform as tf
+
+    assert win._move_step.unit_label.text == "m" and win._move_step.value == pytest.approx(0.1)
+    _combo(win._unit_combo, "MMKS")
+    assert "Units: MMKS (mm, kg, N, s, deg)" in status(win)
+    assert kit_stubs.sys.modules["carb.settings"].get_settings().get(
+        "/persistent/exts/gomjb.physics_designer/unitSystem") == "MMKS"
+    assert win._move_step.unit_label.text == "mm" and win._move_step.value == pytest.approx(100.0)
+    select(ctx, "/World/A")
+    click("X +")
+    assert tf.world_position(ctx.stage.GetPrimAtPath("/World/A"))[0] == pytest.approx(0.1)  # 100 mm
+    click("Get from selection")
+    assert win._abs_pos.value[0] == pytest.approx(100.0)
+
+    # joint inputs follow the joint type: degrees for revolute, lengths for prismatic
+    assert win._j_lower.unit_label.text == "deg" and win._j_stiff.unit_label.text == "N*mm/deg"
+    _combo(win._j_type, "prismatic")
+    assert win._j_lower.unit_label.text == "mm" and win._j_stiff.unit_label.text == "N/mm"
+    assert win._j_stiff.value == pytest.approx(1.0)  # the SI number stays: 1000 N*m/deg -> 1000 N/m = 1 N/mm
+    _combo(win._j_type, "revolute")
+    assert win._j_stiff.value == pytest.approx(1.0e6) and win._j_stiff.unit_label.text == "N*mm/deg"
+
+    # modeler: a 500 x 300 x 200 mm box is 0.5 x 0.3 x 0.2 m on the stage
+    m = win.modeler
+    assert [d.value for d in m._dim_inputs] == pytest.approx([500.0, 300.0, 200.0])
+    m._density.value = 7.85e-6  # kg/mm^3 = steel
+    select(ctx)
+    m.create()
+    box = ctx.stage.GetPrimAtPath(ctx.selection.paths[0])
+    assert md.body_params(box)["dims"] == pytest.approx([0.5, 0.3, 0.2])
+    assert md.body_mass_properties(box, si=True).mass == pytest.approx(7850 * 0.5 * 0.3 * 0.2)
+    assert "kg*mm^2" in status(win)
+
+    # templates: the builders' metre defaults show in mm and build the same lift
+    _combo(win._tpl, "Scissor lift")
+    win._tpl_frame.rebuild()
+    kind, arm = win._template_inputs["arm_length"]
+    assert arm.unit_label.text == "mm" and arm.value == pytest.approx(1200.0)
+    assert win._template_inputs["arm_mass"][1].unit_label.text == "kg"
+
+    # exact solver: From / To in mm, results in N and mm
+    ph.ensure_physics_scene(ctx.stage)
+    res = me.build_scissor_lift(ctx.stage, stages=1, sides=1, angle=30.0)
+    a = win.analysis
+    assert a._sweep_from.unit_label.text == "mm | deg"
+    a._root.model.set_value(res["root"][0])
+    targets = [me.scissor_slider_offset(1.2, 30.0, deg) for deg in (40.0, 50.0)]
+    a._sweep_from.value, a._sweep_to.value = (1000.0 * t for t in targets)
+    a._sweep_points.model.set_value(2)
+    a._filter.model.set_value("Actuator")
+    click("Sweep drive")
+    assert a.recording.x_unit == "m" and a.recording.time == pytest.approx(targets)  # the result stays SI
+    assert a._plot.x_data[0] == pytest.approx(sorted(1000.0 * t for t in targets))
+    for deg, force in zip((40.0, 50.0), a.recording.channels["force:Actuator"]):
+        assert -force == pytest.approx(me.scissor_actuator_force(1.2, deg, 1, 20.0, 5.0, sides=1), rel=1e-6)
+    a._csv.model.set_value(str(tmp_path / "mm.csv"))
+    click("Export CSV")
+    assert (tmp_path / "mm.csv").read_text(encoding="utf-8").startswith("Actuator [mm],")
+
+    # back to MKS: the same physical values
+    _combo(win._unit_combo, "MKS")
+    assert win._move_step.value == pytest.approx(0.1) and win._abs_pos.value[0] == pytest.approx(0.1)
+
+
+def test_unit_system_on_a_centimetre_stage(env):
+    """Display units are independent of the stage scale: 100 mm on a cm stage is 10 stage units."""
+    win, ctx, _ = env
+    from gomjb.physics_designer.core import transform as tf
+
+    UsdGeom.SetStageMetersPerUnit(ctx.stage, 0.01)
+    _combo(win._unit_combo, "MMKS")
+    select(ctx, "/World/A")
+    click("Z +")
+    assert tf.world_position(ctx.stage.GetPrimAtPath("/World/A"))[2] == pytest.approx(10.0)
+
+
 def md_mass(stage, path):
     from gomjb.physics_designer.core import modeling as md
 

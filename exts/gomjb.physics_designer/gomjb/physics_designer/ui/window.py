@@ -5,6 +5,7 @@ import inspect
 from typing import Callable, Dict, List, Optional, Sequence
 
 import carb
+import carb.settings
 import omni.ui as ui
 import omni.usd
 from pxr import Usd, UsdGeom, UsdPhysics
@@ -16,15 +17,18 @@ from ..core import mechanisms as me
 from ..core import physics as ph
 from ..core import snapping as sn
 from ..core import transform as tf
+from ..core import units as un
 from ..core import validation as va
 from ..core.stage_utils import prims_from_paths
 from .analysis_section import AnalysisSection
 from .live_snap import LiveSnap
 from .modeler_section import ModelerSection
-from .widgets import (BoolInput, ComboInput, FloatInput, IntInput, StringInput, Vec3Input, button_row, hint,
-                      section)
+from .widgets import (BoolInput, ComboInput, FloatInput, IntInput, StringInput, UnitFloat, Units, UnitVec3,
+                      Vec3Input, button_row, hint, section)
 
 WINDOW_TITLE = "Physics Designer"
+UNITS_SETTING = "/persistent/exts/gomjb.physics_designer/unitSystem"
+_LINEAR_JOINTS = ("prismatic", "distance")
 
 _AXIS_ITEMS = ["X", "Y", "Z", "-X", "-Y", "-Z"]
 _FACE_ITEMS = ["+Z", "-Z", "+X", "-X", "+Y", "-Y"]
@@ -52,6 +56,8 @@ class PhysicsDesignerWindow(ui.Window):
         self._validation_model = ui.SimpleStringModel("Press 'Validate stage' to check the physics setup.")
         self._issues: List[va.Issue] = []
         self._template_inputs: Dict[str, object] = {}
+        saved = carb.settings.get_settings().get(UNITS_SETTING)
+        self.units = Units(saved if saved in un.SYSTEMS else "MKS")
         self.modeler = ModelerSection(self)
         self.analysis = AnalysisSection(self)
         self._stage_sub = omni.usd.get_context().get_stage_event_stream().create_subscription_to_pop(
@@ -133,8 +139,20 @@ class PhysicsDesignerWindow(ui.Window):
     # =================================================================================
     # Layout
     # =================================================================================
+    def set_unit_system(self, name: str) -> None:
+        """Show and read every value in ``name`` (MKS, MMKS, ...); the stage itself is unchanged."""
+        self.units.set_system(name)
+        carb.settings.get_settings().set(UNITS_SETTING, name)
+        us = self.units.system
+        self._status(f"Units: {name} ({us.length}, {us.mass}, {us.force}, s, deg).")
+
     def _build(self):
         with ui.VStack(spacing=4):
+            self._unit_combo = ComboInput(
+                "Unit system", list(un.SYSTEMS), default=list(un.SYSTEMS).index(self.units.system.name),
+                tooltip="Units of every value in this window (time in s, angles in deg). The stage keeps its "
+                        "own scale (metersPerUnit); values are converted.",
+                on_changed=self.set_unit_system)
             with ui.HStack(height=20):
                 ui.StringField(model=self._selection_model, read_only=True)
             with ui.ScrollingFrame(horizontal_scrollbar_policy=ui.ScrollBarPolicy.SCROLLBAR_ALWAYS_OFF):
@@ -157,7 +175,7 @@ class PhysicsDesignerWindow(ui.Window):
     def _build_move(self):
         with section("Move & Rotate"):
             with ui.VStack(spacing=3):
-                self._move_step = FloatInput("Move step", 0.1, "Distance per nudge (stage units)")
+                self._move_step = self.units.float("Move step", 0.1, "length", "Distance per nudge")
                 self._move_space = ComboInput("Space", ["world", "local"])
                 for axis in "XYZ":
                     button_row([
@@ -172,16 +190,16 @@ class PhysicsDesignerWindow(ui.Window):
                 button_row([(f"R{a} {s}", lambda a=a, s=s: self._rotate(a, 1 if s == "+" else -1))
                             for a in "XYZ" for s in "-+"], height=22, spacing=2)
                 ui.Spacer(height=4)
-                self._abs_pos = Vec3Input("World position")
+                self._abs_pos = self.units.vec3("World position", (0.0, 0.0, 0.0), "length")
                 button_row([("Get from selection", self._get_position), ("Apply to selection", self._set_position)])
                 ui.Spacer(height=4)
                 self._align_axis = ComboInput("Align / Distribute", ["X", "Y", "Z"], default=2)
                 self._align_mode = ComboInput("Align mode", ["min", "center", "max"], default=0)
                 self._align_ref = ComboInput("Align to", ["first", "last", "group"])
-                self._dist_gap = FloatInput("Distribute gap", -1.0, "< 0: even spacing of centers, "
-                                                                  ">= 0: pack with this gap")
+                self._dist_gap = self.units.float("Distribute gap", -1.0, "length", "< 0: even spacing of centers, "
+                                                                                    ">= 0: pack with this gap")
                 button_row([("Align", self._align), ("Distribute", self._distribute)])
-                self._drop_height = FloatInput("Ground height", 0.0)
+                self._drop_height = self.units.float("Ground height", 0.0, "length")
                 button_row([
                     ("Drop to ground", lambda: self._drop(False), "Bbox bottom onto ground height"),
                     ("Drop onto objects", lambda: self._drop(True), "Rest on the highest overlapping prim"),
@@ -189,8 +207,8 @@ class PhysicsDesignerWindow(ui.Window):
                 ])
 
     def _nudge(self, axis: str, sign: int):
-        off = mu.AXIS_VECTORS[axis] * (sign * self._move_step.value)
-        self._run(f"Move {axis}", lambda s, p: tf.translate(p, off, self._move_space.value), min_sel=1)
+        self._run(f"Move {axis}", lambda s, p: tf.translate(
+            p, mu.AXIS_VECTORS[axis] * (sign * self._move_step.core(s)), self._move_space.value), min_sel=1)
 
     def _rotate(self, axis: str, sign: int):
         ang = sign * self._rot_step.value
@@ -200,25 +218,25 @@ class PhysicsDesignerWindow(ui.Window):
     def _get_position(self):
         prims = self._selection()
         if prims:
-            self._abs_pos.value = tuple(tf.world_position(prims[0]))
+            self._abs_pos.set_core(self._stage(), tuple(tf.world_position(prims[0])))
 
     def _set_position(self):
-        pos = self._abs_pos.value
-        self._run("Set position", lambda s, p: [tf.set_world_position(x, pos) for x in tf._top_level(p)], min_sel=1)
+        self._run("Set position", lambda s, p: [tf.set_world_position(x, self._abs_pos.core(s))
+                                                for x in tf._top_level(p)], min_sel=1)
 
     def _align(self):
         self._run("Align", lambda s, p: tf.align(p, self._align_axis.value, self._align_mode.value,
                                                  self._align_ref.value), min_sel=2)
 
     def _distribute(self):
-        gap = self._dist_gap.value
-        self._run("Distribute", lambda s, p: tf.distribute(p, self._align_axis.value, None if gap < 0 else gap),
-                  min_sel=2)
+        self._run("Distribute", lambda s, p: tf.distribute(
+            p, self._align_axis.value, None if self._dist_gap.value < 0 else self._dist_gap.core(s)), min_sel=2)
 
     def _drop(self, onto: bool):
         def op(stage, prims):
             others = [x for x in stage.Traverse() if x.HasAPI(UsdPhysics.CollisionAPI)] if onto else None
-            tf.drop_to(prims, self._drop_height.value, up_axis=str(UsdGeom.GetStageUpAxis(stage)), onto=others)
+            tf.drop_to(prims, self._drop_height.core(stage), up_axis=str(UsdGeom.GetStageUpAxis(stage)),
+                       onto=others)
 
         self._run("Drop", op, min_sel=1)
 
@@ -232,13 +250,14 @@ class PhysicsDesignerWindow(ui.Window):
     def _build_snap(self):
         with section("Snap"):
             with ui.VStack(spacing=3):
-                self._grid = FloatInput("Grid size", 0.05)
+                self._grid = self.units.float("Grid size", 0.05, "length")
                 self._angle = FloatInput("Angle step (deg)", 15.0, step=1.0)
                 button_row([
-                    ("Pivot to grid", lambda: self._run("Grid snap", lambda s, p: sn.snap_to_grid(p, self._grid.value),
+                    ("Pivot to grid", lambda: self._run("Grid snap", lambda s, p: sn.snap_to_grid(p, self._grid.core(s)),
                                                        min_sel=1)),
                     ("BBox corner to grid", lambda: self._run(
-                        "Grid snap (bbox)", lambda s, p: sn.snap_to_grid(p, self._grid.value, use_bbox=True), min_sel=1)),
+                        "Grid snap (bbox)", lambda s, p: sn.snap_to_grid(p, self._grid.core(s), use_bbox=True),
+                        min_sel=1)),
                     ("Rotation to step", lambda: self._run(
                         "Angle snap", lambda s, p: sn.snap_rotation(p, self._angle.value), min_sel=1)),
                 ])
@@ -253,17 +272,18 @@ class PhysicsDesignerWindow(ui.Window):
                 self._snap_cand = ComboInput("Nearest: to", ["bbox", "vertex", "pivot"],
                                              tooltip="bbox = 27 points (corners/edges/faces/center), "
                                                      "vertex = mesh vertices")
-                self._snap_max = FloatInput("Max distance", 0.0, "0 = unlimited")
+                self._snap_max = self.units.float("Max distance", 0.0, "length", "0 = unlimited")
                 button_row([("Snap to target", self._snap_target), ("Snap to nearest point", self._snap_nearest)])
                 ui.Separator(height=6)
                 self._mate_face = ComboInput("Mate on target face", _FACE_ITEMS)
-                self._mate_gap = FloatInput("Gap", 0.0, step=0.001)
+                self._mate_gap = self.units.float("Gap", 0.0, "length", step=0.001)
                 self._mate_center = BoolInput("Center on face", True)
                 button_row([("Mate faces / Stack", self._mate)])
 
     def _live_snap_params(self) -> dict:
-        return {"step": self._grid.value, "angle": self._angle.value, "position": self._live_pos.value,
-                "rotation": self._live_rot.value}
+        stage = self._stage()
+        return {"step": self._grid.core(stage) if stage is not None else self._grid.si, "angle": self._angle.value,
+                "position": self._live_pos.value, "rotation": self._live_rot.value}
 
     def _toggle_live(self):
         if self._live_pos.value or self._live_rot.value:
@@ -281,9 +301,8 @@ class PhysicsDesignerWindow(ui.Window):
                   min_sel=2, modify=self._movers)
 
     def _snap_nearest(self):
-        md = self._snap_max.value or None
-
         def op(stage, prims):
+            md = self._snap_max.core(stage) or None
             hits = [sn.snap_to_nearest_point(m, prims[-1], self._snap_src.value, self._snap_cand.value, md)
                     for m in prims[:-1]]
             if not any(h is not None for h in hits):
@@ -292,7 +311,7 @@ class PhysicsDesignerWindow(ui.Window):
         self._run("Snap to nearest", op, min_sel=2, modify=self._movers)
 
     def _mate(self):
-        self._run("Mate faces", lambda s, p: [sn.mate_faces(m, p[-1], self._mate_face.value, self._mate_gap.value,
+        self._run("Mate faces", lambda s, p: [sn.mate_faces(m, p[-1], self._mate_face.value, self._mate_gap.core(s),
                                                             self._mate_center.value) for m in p[:-1]],
                   min_sel=2, modify=self._movers)
 
@@ -307,7 +326,7 @@ class PhysicsDesignerWindow(ui.Window):
                 self._anchor_name = StringInput("Name", "Anchor")
                 self._anchor_kind = ComboInput("Kind", ["generic", "pin", "socket", "mount", "tcp"])
                 self._anchor_loc = ComboInput("Location", _ANCHOR_LOCATIONS)
-                self._anchor_custom = Vec3Input("Custom position")
+                self._anchor_custom = self.units.vec3("Custom position", (0.0, 0.0, 0.0), "length")
                 button_row([("Create anchor on selection", self._create_anchor)])
                 ui.Separator(height=6)
                 hint("Connect: select the MOVING anchor first, then the TARGET anchor. The moving anchor's owner "
@@ -330,7 +349,7 @@ class PhysicsDesignerWindow(ui.Window):
                 elif loc == "BBox center":
                     pos = tf.bbox_center(prim)
                 elif loc == "Custom (world)":
-                    pos = self._anchor_custom.value
+                    pos = self._anchor_custom.core(stage)
                 else:
                     face = loc.split()[0]
                     pos = tf.bbox_face_point(tf.world_bbox(prim), face)
@@ -369,25 +388,29 @@ class PhysicsDesignerWindow(ui.Window):
                 hint("Select body0 then body1 (one prim = joint to world). Selecting two anchors creates the "
                      "joint between their owners at the first anchor; pick World axis 'Anchor frame' to use the "
                      "anchor orientation (Axis token = anchor axis, usually Z).")
-                self._j_type = ComboInput("Type", list(jt.JOINT_TYPES), default=1)
+                self._j_type = ComboInput("Type", list(jt.JOINT_TYPES), default=1,
+                                          on_changed=lambda v: self.units.refresh_labels())
                 self._j_loc = ComboInput("Location", list(_JOINT_LOCATIONS))
-                self._j_custom = Vec3Input("Custom position")
+                self._j_custom = self.units.vec3("Custom position", (0.0, 0.0, 0.0), "length")
                 self._j_axis = ComboInput("World axis", _JOINT_AXES)
                 self._j_custom_axis = Vec3Input("Custom axis", (0, 0, 1))
                 self._j_token = ComboInput("Axis token", ["X", "Y", "Z"],
                                            tooltip="Joint-frame axis that is mapped onto the world axis "
                                                    "(with 'Anchor frame' the anchor's own axis)")
                 self._j_limit = BoolInput("Limits", False)
-                self._j_lower = FloatInput("Lower (deg / units)", -90.0, step=1.0)
-                self._j_upper = FloatInput("Upper (deg / units)", 90.0, step=1.0)
+                self._j_lower = self.units.float("Lower", -90.0, self._jq("length", "angle"), step=1.0)
+                self._j_upper = self.units.float("Upper", 90.0, self._jq("length", "angle"), step=1.0)
                 self._j_drive = BoolInput("Drive", False)
                 self._j_drive_type = ComboInput("Drive type", ["force", "acceleration"])
-                self._j_stiff = FloatInput("Stiffness", 1000.0, step=10.0)
-                self._j_damp = FloatInput("Damping", 100.0, step=1.0)
-                self._j_target = FloatInput("Target position", 0.0)
-                self._j_tvel = FloatInput("Target velocity", 0.0)
-                self._j_maxf = FloatInput("Max force (0=inf)", 0.0)
-                self._j_break = FloatInput("Break force (0=never)", 0.0)
+                self._j_stiff = self.units.float("Stiffness", 1000.0, self._jq("linear_stiffness", "angular_stiffness"),
+                                                 step=10.0)
+                self._j_damp = self.units.float("Damping", 100.0, self._jq("linear_damping", "angular_damping"),
+                                                step=1.0)
+                self._j_target = self.units.float("Target position", 0.0, self._jq("length", "angle"))
+                self._j_tvel = self.units.float("Target velocity", 0.0, self._jq("velocity", "angular_velocity"))
+                self._j_maxf = self.units.float("Max force (0=inf)", 0.0, self._jq("force", "torque"))
+                self._j_break = self.units.float("Break force (0=never)", 0.0, "force")
+                self._j_break_t = self.units.float("Break torque (0=never)", 0.0, "torque")
                 self._j_collide = BoolInput("Collide bodies", False)
                 self._j_excl = BoolInput("Exclude from artic.", False)
                 self._j_parent = ComboInput("Joint prim under", ["<root>/Joints", "body0", "body1"])
@@ -396,21 +419,28 @@ class PhysicsDesignerWindow(ui.Window):
                 button_row([("Create joint", self._create_joint),
                             ("Realign selected joints", self._realign_joints)])
 
-    def _joint_spec(self) -> jt.JointSpec:
+    def _jq(self, linear: str, angular: str):
+        """Quantity of a joint input: ``linear`` for prismatic / distance joints, else ``angular``."""
+        return lambda: linear if self._j_type.value in _LINEAR_JOINTS else angular
+
+    def _joint_spec(self, stage: Usd.Stage) -> jt.JointSpec:
         jtype = self._j_type.value
         spec = jt.JointSpec(jtype, axis=self._j_token.value, collision_enabled=self._j_collide.value,
                             exclude_from_articulation=self._j_excl.value,
-                            break_force=self._j_break.value or None, break_torque=self._j_break.value or None)
+                            break_force=self._j_break.core(stage) or None,
+                            break_torque=self._j_break_t.core(stage) or None)
+        lower, upper = self._j_lower.core(stage), self._j_upper.core(stage)
         if self._j_limit.value:
             if jtype in ("revolute", "prismatic"):
-                spec.lower, spec.upper = self._j_lower.value, self._j_upper.value
+                spec.lower, spec.upper = lower, upper
             elif jtype == "spherical":
-                spec.cone0 = spec.cone1 = abs(self._j_upper.value)
+                spec.cone0 = spec.cone1 = abs(upper)
             elif jtype == "distance":
-                spec.min_distance, spec.max_distance = max(0.0, self._j_lower.value), self._j_upper.value
+                spec.min_distance, spec.max_distance = max(0.0, lower), upper
         if self._j_drive.value:
-            drive = jt.DriveSpec(self._j_drive_type.value, self._j_stiff.value, self._j_damp.value,
-                                 self._j_maxf.value or None, self._j_target.value, self._j_tvel.value)
+            drive = jt.DriveSpec(self._j_drive_type.value, self._j_stiff.core(stage), self._j_damp.core(stage),
+                                 self._j_maxf.core(stage) or None, self._j_target.core(stage),
+                                 self._j_tvel.core(stage))
             if jtype in ("revolute", "prismatic"):
                 spec.drive = drive
             elif jtype == "d6":
@@ -444,7 +474,7 @@ class PhysicsDesignerWindow(ui.Window):
                 missing = [b for b in (b0, b1) if b is not None and not b.HasAPI(UsdPhysics.RigidBodyAPI)]
                 if missing:
                     ph.apply_rigid_body(missing)
-            spec = self._joint_spec()
+            spec = self._joint_spec(stage)
             loc = "anchor" if anchor_pair else _JOINT_LOCATIONS[self._j_loc.value]
             axis_item = self._j_axis.value
             if axis_item == "Anchor frame":
@@ -463,7 +493,7 @@ class PhysicsDesignerWindow(ui.Window):
             elif self._j_parent.value == "body1" and b1 is not None:
                 parent = b1.GetPath()
             return jt.create_joint_at(stage, spec, b0, b1, location=loc, world_axis=world_axis, anchor=anchor,
-                                      custom_position=self._j_custom.value, parent_path=parent)
+                                      custom_position=self._j_custom.core(stage), parent_path=parent)
 
         self._run("Create joint", op, min_sel=1, modify=modify, select_result=True)
 
@@ -492,10 +522,10 @@ class PhysicsDesignerWindow(ui.Window):
                     ("Collider only", lambda: self._run("Collider", lambda s, p: ph.apply_collision(
                         p, self._approx.value), min_sel=1)),
                 ])
-                self._mass = FloatInput("Mass (kg, 0=auto)", 0.0, step=0.1)
-                self._density = FloatInput("Density (0=auto)", 0.0, step=10.0)
+                self._mass = self.units.float("Mass (0=auto)", 0.0, "mass", step=0.1)
+                self._density = self.units.float("Density (0=auto)", 0.0, "density", step=10.0)
                 button_row([("Set mass / density", lambda: self._run("Mass", lambda s, p: ph.set_mass(
-                    p, self._mass.value or None, self._density.value or None), min_sel=1))])
+                    p, self._mass.core(s) or None, self._density.core(s) or None), min_sel=1))])
                 ui.Separator(height=6)
                 self._sf = FloatInput("Static friction", 0.5)
                 self._df = FloatInput("Dynamic friction", 0.5)
@@ -538,6 +568,8 @@ class PhysicsDesignerWindow(ui.Window):
                 button_row([("Build template", self._build_template)])
 
     def _build_template_params(self):
+        """One input per builder parameter; annotated quantities (core.units) show in the unit system.
+        Defaults are the builders' metre-based values."""
         fn = me.TEMPLATES[self._tpl.value]
         self._template_inputs = {}
         with ui.VStack(spacing=2, height=0):
@@ -545,35 +577,37 @@ class PhysicsDesignerWindow(ui.Window):
                 if name in ("stage", "parent"):
                     continue
                 d = param.default
+                q = un.annotation_quantity(param.annotation)
                 label = name.replace("_", " ")
                 if isinstance(d, bool):
                     self._template_inputs[name] = ("bool", BoolInput(label, d))
                 elif isinstance(d, int):
                     self._template_inputs[name] = ("int", IntInput(label, d, min_value=1))
                 elif isinstance(d, float):
-                    self._template_inputs[name] = ("float", FloatInput(label, d))
+                    self._template_inputs[name] = ("float", self.units.float(label, d, q) if q else FloatInput(label, d))
                 elif isinstance(d, str):
                     self._template_inputs[name] = ("str", StringInput(label, d))
                 elif isinstance(d, tuple) and len(d) in (2, 3):
-                    vals = tuple(d) + (0.0,) * (3 - len(d))
-                    self._template_inputs[name] = (f"vec{len(d)}", Vec3Input(label, vals))
+                    vals = tuple(float(v) for v in d) + (0.0,) * (3 - len(d))
+                    widget = self.units.vec3(label, vals, q) if q else Vec3Input(label, vals)
+                    self._template_inputs[name] = (f"vec{len(d)}", widget)
                 elif d is None:
-                    self._template_inputs[name] = ("optional", FloatInput(label + " (0=none)", 0.0))
+                    self._template_inputs[name] = ("optional", self.units.float(label + " (0=none)", 0.0, q))
             doc = (inspect.getdoc(fn) or "").split("\n\n")[0]
             hint(doc)
 
     def _build_template(self):
         fn = me.TEMPLATES[self._tpl.value]
-        kwargs = {}
-        for name, (kind, widget) in self._template_inputs.items():
-            v = widget.value
-            if kind == "vec2":
-                v = tuple(v[:2])
-            elif kind == "optional":
-                v = v or None
-            kwargs[name] = v
 
         def op(stage, prims):
+            kwargs = {}
+            for name, (kind, widget) in self._template_inputs.items():
+                v = widget.core(stage) if isinstance(widget, (UnitFloat, UnitVec3)) else widget.value
+                if kind == "vec2":
+                    v = tuple(v[:2])
+                elif kind == "optional":
+                    v = v or None
+                kwargs[name] = v
             res = fn(stage, **kwargs)
             return [res["root"][0]]
 

@@ -7,7 +7,7 @@ from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics, UsdShade
 
 from . import transform as tf
 from .snapping import is_anchor
-from .stage_utils import default_root, is_guide, stage_up_axis, unique_child_path
+from .stage_utils import default_root, is_guide, si_factors, stage_up_axis, unique_child_path
 
 APPROXIMATIONS = (
     "none",  # triangle mesh (static only in PhysX)
@@ -115,13 +115,17 @@ def create_collision_group(stage: Usd.Stage, name: str, members: Sequence[Usd.Pr
 # ---------------------------------------------------------------------------------------
 def set_mass(prims: Iterable[Usd.Prim], mass: Optional[float] = None, density: Optional[float] = None,
              center_of_mass=None, diagonal_inertia=None) -> None:
-    """MassAPI. Give either ``mass`` (kg) or ``density`` (kg / stage-unit^3)."""
+    """MassAPI. Give either ``mass`` (kg) or ``density`` (kg/m^3); they are authored in stage units
+    (metersPerUnit / kilogramsPerUnit), as USD Physics expects. ``center_of_mass`` and
+    ``diagonal_inertia`` are in stage units."""
+    prims = list(prims)
+    f = si_factors(prims[0].GetStage()) if prims else None
     for prim in prims:
         api = UsdPhysics.MassAPI.Apply(prim)
         if mass is not None:
-            api.CreateMassAttr().Set(float(mass))
+            api.CreateMassAttr().Set(float(mass) / f["mass"])
         if density is not None:
-            api.CreateDensityAttr().Set(float(density))
+            api.CreateDensityAttr().Set(float(density) / f["density"])
         if center_of_mass is not None:
             api.CreateCenterOfMassAttr().Set(Gf.Vec3f(*center_of_mass))
         if diagonal_inertia is not None:

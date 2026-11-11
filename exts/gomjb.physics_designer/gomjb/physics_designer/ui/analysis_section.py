@@ -11,6 +11,7 @@ from typing import Dict, List, Optional, Tuple
 import omni.ui as ui
 
 from ..core import physics as ph
+from ..core import units as un
 from .widgets import ComboInput, FloatInput, IntInput, StringInput, button_row, hint, section
 
 PLOTS = ["DOF forces", "DOF positions", "Joint reaction |F|"]
@@ -43,14 +44,16 @@ class AnalysisSection:
         self._plot_spec: dict = {}
         self._slots: Dict[str, int] = {}
         self._summary_model = ui.SimpleStringModel("")
+        self._sweep_from = self._sweep_to = None
+        window.units.add_listener(self._on_units)
 
     def build(self):
         self.frame = section("Analysis")
         with self.frame:
             with ui.VStack(spacing=3):
                 hint("Record: start recording, then Play - every physics step stores joint positions, DOF "
-                     "(actuator) forces and joint reactions in SI units. Loop-closing joints are not "
-                     "reported; Newton reports positions only.")
+                     "(actuator) forces and joint reactions. Loop-closing joints are not reported; Newton "
+                     "reports positions only. Results show in the window's unit system.")
                 self._root = StringInput("Mechanism", "", "Articulation root to record; for the exact "
                                          "solver any prim that holds the bodies")
                 button_row([("Use selection", self.use_selection), ("Start recording", self.start),
@@ -65,14 +68,18 @@ class AnalysisSection:
                             "bushings: undriven joints become stiff bushings - split follows stiffness.")
                 self._drive = StringInput("Sweep drives", "", "Driven joints moved together, comma separated; "
                                           "empty = all drives (e.g. both actuators of a lift)")
-                self._sweep_from = FloatInput("From", 0.0, "Drive target at the start [m or deg]")
-                self._sweep_to = FloatInput("To", 0.1, "Drive target at the end [m or deg]")
+                tip = "Drive target: a length for linear drives, degrees for rotational ones"
+                self._sweep_from = FloatInput("From", 0.0, tip, unit="")
+                self._sweep_to = FloatInput("To", 0.1, tip, unit="")
                 self._sweep_points = IntInput("Points", 11, min_value=2)
+                self._on_units()
                 button_row([("Solve static", self.solve_static), ("Sweep drive", self.sweep)])
                 self._kind = ComboInput("Plot", PLOTS, on_changed=lambda v: self.refresh_plot())
                 self._filter = StringInput("Name filter", "", "Only channels containing this text, e.g. Actuator")
                 ui.StringField(model=self._summary_model, multiline=True, read_only=True, height=90)
-                self._plot_frame = ui.Frame(height=0)
+                # XYPlot is wider than the window: clip it, or every row of the section widens and the
+                # unit column of From / To ends up outside the window
+                self._plot_frame = ui.Frame(height=0, horizontal_clipping=True)
                 self._plot_frame.set_build_fn(self._build_plot)
                 button_row([("Refresh plot", self.refresh_plot), ("Export CSV", self.export_csv)])
                 self._csv = StringInput("CSV file", "", "Empty: Documents/PhysicsDesigner/<name>_<time>.csv")
@@ -164,8 +171,13 @@ class AnalysisSection:
             unknown = [n for n in names if n not in model.drive_names]
             if not names or unknown:
                 raise ValueError(f"no driven joint {', '.join(unknown)} (drives: {', '.join(model.drive_names) or 'none'})")
+            kinds = {model.drive_unit(name) for name in names}
+            if len(kinds) != 1:
+                raise ValueError("drives swept together must all be linear or all angular")
+            us = self._w.units.system  # From / To: lengths in the unit system, angles in deg
+            to_si = (lambda v: un.to_si(v, us, "length")) if kinds == {"m"} else (lambda v: v)
             n = self._sweep_points.value
-            a, b = self._sweep_from.value, self._sweep_to.value
+            a, b = to_si(self._sweep_from.value), to_si(self._sweep_to.value)
             for name in names:  # reach the start of the stroke; drives not swept hold their targets
                 model.set_drive(name, a)
             model.solve_static(steps=10)
@@ -175,9 +187,20 @@ class AnalysisSection:
         self._solve(run)
 
     # -- plotting / export ---------------------------------------------------------------
-    def series(self) -> Tuple[List[str], List[List[float]], List[str]]:
+    def displayed(self):
+        """The result in the window's unit system (the recording itself stays SI)."""
+        return un.convert_recording(self._result, self._w.units.system) if self._result is not None else None
+
+    def _on_units(self) -> None:
+        if self._sweep_from is None:  # not built yet
+            return
+        unit = f"{self._w.units.label('length')} | deg"
+        self._sweep_from.unit_label.text = self._sweep_to.unit_label.text = unit
+        if self._result is not None:
+            self.refresh_plot()
+
+    def series(self, rec) -> Tuple[List[str], List[List[float]], List[str]]:
         """(names, y-series, units) of the selected plot kind and name filter."""
-        rec = self.recording
         if rec is None or not len(rec):
             return [], [], []
         text = self._filter.value.strip()
@@ -198,7 +221,7 @@ class AnalysisSection:
                     comps = [rec.channels[f"{prefix}{item}:{c}"] for c in "xyz"]
                     ys.append([math.sqrt(x * x + y * y + z * z) for x, y, z in zip(*comps)])
                     names.append(item)
-                    units.append("N")
+                    units.append(rec.units.get(f"{prefix}{item}:x", ""))
         return names, ys, units
 
     def _colors(self, names: List[str]) -> List[List[int]]:
@@ -213,8 +236,8 @@ class AnalysisSection:
 
     def refresh_plot(self):
         """Plot and summary: the per-series results first, then the solver report wrapped below."""
-        names, ys, units = self.series()
-        rec = self.recording
+        rec = self.displayed()
+        names, ys, units = self.series(rec)
         report = [w for line in self._report.splitlines() for w in textwrap.wrap(line, SUMMARY_WIDTH, subsequent_indent="  ")]
         if not names:
             self._summary_model.set_value("\n".join(["No data (record a simulation or run the exact solver)."] + report))
@@ -236,7 +259,8 @@ class AnalysisSection:
         self._summary_model.set_value("\n".join(lines + report))
 
     def export_csv(self) -> Optional[str]:
-        rec = self.recording
+        """CSV in the window's unit system (each column header names its unit)."""
+        rec = self.displayed()
         if rec is None or not len(rec):
             self._w._status("Export: no results yet.", error=True)
             return None

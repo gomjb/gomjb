@@ -10,8 +10,9 @@ Each mechanism is one fixed-base articulation, the convention of Isaac Sim robot
 PhysX solves it with exact reduced-coordinate joints and Newton only accepts joints that
 belong to an articulation.  Loop-closing joints are ``excludeFromArticulation``.
 
-Dimensions are in stage units (Isaac Sim default: meters), angles in degrees, and layouts
-are authored Z-up in the root's local frame (the root is rotated for Y-up stages).
+Dimensions and drive parameters are in stage units (Isaac Sim default: meters), masses in kg,
+angles in degrees; parameter annotations (:mod:`units`) name each quantity for the window.
+Layouts are authored Z-up in the root's local frame (the root is rotated for Y-up stages).
 """
 from __future__ import annotations
 
@@ -27,6 +28,7 @@ from . import physics as ph
 from . import transform as tf
 from .snapping import create_anchor
 from .stage_utils import default_root, stage_up_axis, unique_child_path
+from .units import Angle, AngularDamping, Force, Length, Lengths, LinearDamping, LinearStiffness, Mass
 
 STEEL = Gf.Vec3f(0.62, 0.64, 0.68)
 ORANGE = Gf.Vec3f(0.95, 0.55, 0.1)
@@ -96,9 +98,9 @@ class _Builder:
 # ---------------------------------------------------------------------------------------
 # Templates
 # ---------------------------------------------------------------------------------------
-def build_pendulum_chain(stage: Usd.Stage, name: str = "PendulumChain", origin=(0, 0, 2.0), links: int = 5,
-                         link_length: float = 0.25, link_radius: float = 0.02, link_mass: float = 0.5,
-                         initial_angle: float = 30.0, damping: float = 0.0,
+def build_pendulum_chain(stage: Usd.Stage, name: str = "PendulumChain", origin: Lengths = (0, 0, 2.0),
+                         links: int = 5, link_length: Length = 0.25, link_radius: Length = 0.02,
+                         link_mass: Mass = 0.5, initial_angle: Angle = 30.0, damping: AngularDamping = 0.0,
                          parent=None) -> Dict[str, List[str]]:
     """Chain of capsule links hanging from a support fixed to the world, revolute about local Y."""
     b = _Builder(stage, name, origin, parent)
@@ -123,11 +125,11 @@ def build_pendulum_chain(stage: Usd.Stage, name: str = "PendulumChain", origin=(
     return b.result
 
 
-def build_hydraulic_cylinder(stage: Usd.Stage, name: str = "HydraulicCylinder", origin=(0, 0, 0),
-                             direction=(0, 0, 1), retracted_length: float = 0.6, stroke: float = 0.4,
-                             bore: float = 0.08, rod_diameter: float = 0.04, barrel_mass: float = 8.0,
-                             rod_mass: float = 3.0, stiffness: float = 2.0e4, damping: float = 2.0e3,
-                             max_force: Optional[float] = None, fixed_base: bool = True,
+def build_hydraulic_cylinder(stage: Usd.Stage, name: str = "HydraulicCylinder", origin: Lengths = (0, 0, 0),
+                             direction=(0, 0, 1), retracted_length: Length = 0.6, stroke: Length = 0.4,
+                             bore: Length = 0.08, rod_diameter: Length = 0.04, barrel_mass: Mass = 8.0,
+                             rod_mass: Mass = 3.0, stiffness: LinearStiffness = 2.0e4,
+                             damping: LinearDamping = 2.0e3, max_force: Optional[Force] = None, fixed_base: bool = True,
                              parent=None) -> Dict[str, List[str]]:
     """Barrel + rod connected by a driven prismatic joint (stroke limits, PD drive).
 
@@ -155,9 +157,9 @@ def build_hydraulic_cylinder(stage: Usd.Stage, name: str = "HydraulicCylinder", 
     return b.result
 
 
-def build_hinged_door(stage: Usd.Stage, name: str = "HingedDoor", origin=(0, 0, 0), width: float = 0.9,
-                      height: float = 2.0, thickness: float = 0.04, door_mass: float = 20.0,
-                      open_limit: float = 110.0, damping: float = 5.0, parent=None) -> Dict[str, List[str]]:
+def build_hinged_door(stage: Usd.Stage, name: str = "HingedDoor", origin: Lengths = (0, 0, 0),
+                      width: Length = 0.9, height: Length = 2.0, thickness: Length = 0.04, door_mass: Mass = 20.0,
+                      open_limit: Angle = 110.0, damping: AngularDamping = 5.0, parent=None) -> Dict[str, List[str]]:
     """Door frame post (fixed to world) and a panel on a limited revolute hinge (Z axis)."""
     b = _Builder(stage, name, origin, parent)
     post = b.body("Post", (0, 0, height / 2), "box", (0.06, 0.06, height), color=DARK, mass=10.0)
@@ -170,9 +172,10 @@ def build_hinged_door(stage: Usd.Stage, name: str = "HingedDoor", origin=(0, 0, 
     return b.result
 
 
-def build_linear_slider(stage: Usd.Stage, name: str = "LinearSlider", origin=(0, 0, 0), rail_length: float = 1.0,
-                        carriage_size=(0.15, 0.12, 0.06), carriage_mass: float = 2.0,
-                        stiffness: float = 0.0, damping: float = 50.0, parent=None) -> Dict[str, List[str]]:
+def build_linear_slider(stage: Usd.Stage, name: str = "LinearSlider", origin: Lengths = (0, 0, 0),
+                        rail_length: Length = 1.0, carriage_size: Lengths = (0.15, 0.12, 0.06),
+                        carriage_mass: Mass = 2.0, stiffness: LinearStiffness = 0.0, damping: LinearDamping = 50.0,
+                        parent=None) -> Dict[str, List[str]]:
     """Rail fixed to world and a carriage on a limited prismatic joint along X."""
     b = _Builder(stage, name, origin, parent)
     rail_h = 0.04
@@ -187,11 +190,11 @@ def build_linear_slider(stage: Usd.Stage, name: str = "LinearSlider", origin=(0,
     return b.result
 
 
-def build_scissor_lift(stage: Usd.Stage, name: str = "ScissorLift", origin=(0, 0, 0), stages: int = 3,
-                       arm_length: float = 1.2, angle: float = 25.0, width: float = 0.8,
-                       arm_section=(0.06, 0.03), sides: int = 2, arm_mass: float = 5.0,
-                       platform_mass: float = 20.0, base_mass: float = 60.0, arm_collision: bool = False,
-                       sag_tolerance: float = 0.002, parent=None) -> Dict[str, List[str]]:
+def build_scissor_lift(stage: Usd.Stage, name: str = "ScissorLift", origin: Lengths = (0, 0, 0), stages: int = 3,
+                       arm_length: Length = 1.2, angle: Angle = 25.0, width: Length = 0.8,
+                       arm_section: Lengths = (0.06, 0.03), sides: int = 2, arm_mass: Mass = 5.0,
+                       platform_mass: Mass = 20.0, base_mass: Mass = 60.0, arm_collision: bool = False,
+                       sag_tolerance: Length = 0.002, parent=None) -> Dict[str, List[str]]:
     """Multi-stage scissor lift.
 
     Layout in the root frame: arms move in the XZ plane, pins rotate about Y.

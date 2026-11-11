@@ -41,6 +41,23 @@ Isaac Sim의 `python.bat -m pip install exudyn==1.13.6` 으로 미리 설치하�
 
 창의 글자는 영어입니다. Isaac Sim 기본 UI 폰트에 한글 글리프가 없어 한글이 `?`로 표시되기 때문입니다.
 
+**Unit system (단위계)** — 창 맨 위에서 고릅니다. 창의 모든 입력과 결과(그래프·요약·CSV)가 이 단위로 표시되고,
+필드 이름 옆에 단위가 붙습니다(`Move step [mm]`). 시간은 항상 s, 각도는 deg입니다.
+
+| 단위계 | 길이 | 질량 | 힘 | 예: 토크 / 밀도 / 직선 강성 |
+|---|---|---|---|---|
+| MKS (기본) | m | kg | N | N*m, kg/m^3, N/m |
+| MMKS | mm | kg | N | N*mm, kg/mm^3, N/mm |
+| CGS | cm | g | dyn | dyn*cm, g/cm^3, dyn/cm |
+| MTS | m | t | kN | kN*m, t/m^3, kN/m |
+| IPS | in | lbm | lbf | lbf*in, lbm/in^3, lbf/in |
+
+* MKS·MMKS·CGS·IPS 구성은 [Ansys Motion](https://ansyshelp.ansys.com/public/views/secured/corp/v252/en/motion_pre/Unit_System_in.html)·[Altair](https://help.altair.com/mold/en_us/topics/shared/glossary/gloss_unit_system_selector_c.htm)의 정의를 따릅니다. 이 툴들처럼 단위계가 일관계일 필요는 없습니다(MMKS = mm·kg·N·s).
+* 단위계를 바꾸면 입력값은 **같은 물리량을 유지**하도록 변환됩니다(0.1 m → 100 mm). 선택은 다음 실행에도 유지됩니다.
+* **스테이지는 바뀌지 않습니다.** USD는 자체 축척(`metersPerUnit` / `kilogramsPerUnit`)으로 저장하고, 디자이너가
+  입출력 때 변환합니다. cm 스테이지에서 MMKS로 100 mm를 이동하면 스테이지 값은 10입니다.
+* 조인트의 리밋·드라이브 입력은 조인트 종류를 따릅니다(revolute: deg, N*mm/deg / prismatic: mm, N/mm).
+
 ### 2.0 Modeler (모델러)
 RecurDyn·Adams의 바디 관례를 따라 **물리 준비가 끝난 강체**를 만듭니다. 바디 하나는 기준 좌표계, 형상,
 재질, 질량 특성으로 이루어집니다. Isaac의 `Create > Shape`와 달리 바디 좌표계에는 스케일이 없어서 조인트와
@@ -54,7 +71,7 @@ RecurDyn·Adams의 바디 관례를 따라 **물리 준비가 끝난 강체**를
 | **Link** | pin distance, width, thickness — 양 끝이 둥근 막대, 양 끝 핀에 앵커 `PinA` / `PinB` 자동 생성(앵커 Z축 = 핀 축) |
 
 * **재질**: steel·stainless·aluminum·cast_iron·brass·abs_plastic·wood·rubber 밀도 프리셋, 또는 밀도·질량 직접 입력
-  (입력은 SI: kg/m³, kg — 스테이지 단위(m/cm)로 자동 환산)
+  (선택한 단위계로 입력, 예: MMKS 강철 7.85e-6 kg/mm^3)
 * **질량 특성**: 질량·무게중심·주관성모멘트를 **해석식으로 계산해 명시적으로 기록**합니다(수치 적분으로 1% 이내 검증).
   충돌체가 없는 바디도 올바른 관성을 가집니다.
 * **바디 종류**: dynamic / kinematic / static(충돌체만) / visual(물리 없음)
@@ -125,7 +142,8 @@ boundingCube·boundingSphere), 질량·밀도, 물리 머티리얼(정/동마찰
 다른 articulation과 함께 있을 때 발산(NaN)하는 것을 확인했기 때문입니다.
 
 ### 2.6 Mechanism templates (메커니즘 템플릿)
-파라미터를 입력해 바로 시뮬레이션 가능한 기구를 생성합니다 (단위: stage unit, 기본 m / deg).
+파라미터를 입력해 바로 시뮬레이션 가능한 기구를 생성합니다 (치수·질량·드라이브는 선택한 단위계, 각도는 deg).
+템플릿 내부의 고정 치수(받침대 크기 등)는 m 기준이라, 스테이지가 m가 아니면 그 부분의 크기가 맞지 않습니다.
 
 | 템플릿 | 구성 |
 |---|---|
@@ -166,13 +184,13 @@ Isaac Sim 6.1 실측 (3단, 팔 1.2 m, 20°, 목표 핀 높이 2.2 m):
 
 ### 2.8 Analysis (결과 기록·그래프)
 기구를 선택하고 *Use selection* → *Start recording* → Play 하면 **매 물리 스텝마다** articulation의 상태를
-기록합니다(Isaac Sim 6 텐서 API = 실제 시뮬레이션 값, SI 단위로 환산).
+기록합니다(Isaac Sim 6 텐서 API = 실제 시뮬레이션 값). 기록은 SI로 저장되고 화면·CSV는 선택한 단위계로 보입니다.
 
-| 채널 | 내용 | 단위 |
+| 채널 | 내용 | 단위 (MKS / MMKS) |
 |---|---|---|
-| `pos:<DOF>` | 조인트 위치 | deg / m |
-| `force:<DOF>` | DOF 축 방향 힘(드라이브·액추에이터 힘) | N·m / N |
-| `link_force:<link>:x/y/z`, `link_torque:...` | 링크로 들어오는 조인트의 6축 반력 (자식 조인트 좌표계) | N / N·m |
+| `pos:<DOF>` | 조인트 위치 | deg, m / mm |
+| `force:<DOF>` | DOF 축 방향 힘(드라이브·액추에이터 힘) | N*m / N*mm, N |
+| `link_force:<link>:x/y/z`, `link_torque:...` | 링크로 들어오는 조인트의 6축 반력 (자식 조인트 좌표계) | N, N*m / N*mm |
 
 * *Plot*: DOF 힘 / DOF 위치 / 조인트 반력 크기, *Name filter* 로 채널 선택(최대 8계열, 색은 채널에 고정)
 * 요약(최소·최대·최종값)과 그래프(Isaac `XYPlot`), *Export CSV*(Excel·pandas에서 바로 열림)
@@ -334,6 +352,7 @@ exts/gomjb.physics_designer/
 │   │   ├── modeling.py     # 모델러: 형상 바디, 해석적 질량 특성, Link 핀 앵커
 │   │   ├── mechanisms.py   # 파라메트릭 템플릿 + 시저 해석해
 │   │   ├── results.py      # 시계열 기록, CSV
+│   │   ├── units.py        # 단위계(MKS·MMKS·CGS·MTS·IPS), 표시 단위 <-> SI <-> 스테이지 단위 변환
 │   │   ├── mbd.py          # 정확해석기: USD → Exudyn 구속 모델, 정적·스윕·동적, 중복 구속 처리
 │   │   ├── validation.py   # 검사 + 자동 수정
 │   │   └── snapshot.py     # 경로 단위 Undo 스냅샷

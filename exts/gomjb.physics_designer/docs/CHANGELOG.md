@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.5.0] - 2026-11-11
+### Added
+- Unit system selector (MKS, MMKS, CGS, MTS, IPS; time s, angles deg) for every input and result in
+  the window: labels carry the unit, values keep their physical meaning when the system changes,
+  the choice persists. The stage keeps its own scale; values are converted (`core.units`).
+- Joint limit and drive inputs take the joint type's quantity (deg / length, N*mm/deg / N/mm, ...);
+  separate break force and break torque inputs.
+- Template parameters carry unit annotations (`Length`, `Mass`, `LinearStiffness`, ...).
+
+### Changed
+- `physics.set_mass` takes kg and kg/m^3 and authors them in stage units (it wrote the raw value).
+- Exact-solver results stay SI in the recording; plot, summary and CSV show the unit system.
+- `Recording.x_name` / `x_unit` replace the `x_label` field (`x_label` is now derived).
+
 ## [0.4.0] - 2026-11-11
 ### Added
 - Exact solver (`core.mbd`, Exudyn 1.13.6 through `[python.pipapi]`): the USD model as an exact

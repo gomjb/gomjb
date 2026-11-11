@@ -14,14 +14,19 @@ from typing import Dict, Iterable, List, Optional
 
 @dataclass
 class Recording:
-    """Samples over ``time`` — the abscissa, which ``x_label`` names: simulated time for a run, or
-    the drive value for a static sweep."""
+    """Samples over ``time`` — the abscissa, named ``x_name`` in ``x_unit``: simulated time for a run,
+    or the drive value for a static sweep."""
 
     name: str = "recording"
     time: List[float] = field(default_factory=list)
     channels: Dict[str, List[float]] = field(default_factory=dict)
     units: Dict[str, str] = field(default_factory=dict)
-    x_label: str = "time [s]"
+    x_name: str = "time"
+    x_unit: str = "s"
+
+    @property
+    def x_label(self) -> str:
+        return f"{self.x_name} [{self.x_unit}]" if self.x_unit else self.x_name
 
     def add_sample(self, t: float, values: Dict[str, float]) -> None:
         n = len(self.time)
@@ -66,7 +71,8 @@ class Recording:
         with open(path, newline="", encoding="utf-8") as f:
             rows = list(csv.reader(f))
         header = rows[0]
-        rec.x_label = header[0]
+        name_, _, unit = header[0].rpartition(" [")
+        rec.x_name, rec.x_unit = (name_, unit.rstrip("]")) if name_ else (header[0], "")
         keys = []
         for col in header[1:]:
             key, _, unit = col.rpartition(" [")

@@ -224,6 +224,10 @@ class MbdModel:
         mj.drives[axis] = math.radians(value_si) if axis >= 3 else value_si / self.si["length"]
         self.mbs.SetObjectParameter(mj.index, "offsetUserFunctionParameters", _j0_values(mj.drives))
 
+    def drive_unit(self, name: str) -> str:
+        """SI unit of a drive's target: 'm' for a linear drive, 'deg' for a rotational one."""
+        return "deg" if next(iter(self.joints[name].drives)) >= 3 else "m"
+
     def drive_value(self, name: str) -> float:
         mj = self.joints[name]
         axis, value = next(iter(mj.drives.items()))
@@ -264,18 +268,18 @@ class MbdModel:
     def static_solution(self, steps: int = 10) -> Recording:
         """:meth:`solve_static` at the current drive targets as a one-sample recording."""
         rec = self._recording(f"{self.root_path.rsplit('/', 1)[-1]}_static")
-        rec.x_label = "solution"
+        rec.x_name, rec.x_unit = "solution", ""
         rec.add_sample(0.0, self.solve_static(steps))
         return rec
 
     def static_sweep(self, drives: Sequence[str], values_si: Sequence[float], substeps: int = 5) -> Recording:
         """Static solutions along a stroke of ``drives`` moved together (e.g. the paired actuators
         of a two-sided lift); ``values_si`` in m or deg, x = drive value. Other drives hold."""
-        units = {"deg" if next(iter(self.joints[d].drives)) >= 3 else "m" for d in drives}
+        units = {self.drive_unit(d) for d in drives}
         if len(units) != 1:
             raise ValueError("drives swept together must all be linear or all angular")
         rec = self._recording(f"{self.root_path.rsplit('/', 1)[-1]}_static")
-        rec.x_label = f"{', '.join(drives)} [{units.pop()}]"
+        rec.x_name, rec.x_unit = ", ".join(drives), units.pop()
         starts = {d: self.drive_value(d) for d in drives}
         for v in values_si:
             for k in range(1, substeps + 1):

@@ -160,6 +160,10 @@ def install():
     app.get_app = lambda: types.SimpleNamespace(get_update_event_stream=lambda: _Stream())
     carb = types.ModuleType("carb")
     carb.log_info = carb.log_warn = carb.log_error = lambda *a: None
+    settings = types.ModuleType("carb.settings")
+    store = {}
+    settings.get_settings = lambda: types.SimpleNamespace(get=store.get, set=store.__setitem__)
+    carb.settings = settings
     ext = types.ModuleType("omni.ext")
     ext.IExt = object
 
@@ -183,6 +187,7 @@ def install():
     omni.ui, omni.usd, omni.kit, omni.ext = ui, usd, kit, ext
     kit.commands, kit.app = commands, app
     sys.modules.update({"omni": omni, "omni.ui": ui, "omni.usd": usd, "omni.kit": kit, "omni.kit.commands": commands,
-                        "omni.kit.app": app, "omni.ext": ext, "carb": carb, "isaacsim": isaacsim,
+                        "omni.kit.app": app, "omni.ext": ext, "carb": carb, "carb.settings": settings,
+                        "isaacsim": isaacsim,
                         "isaacsim.gui": gui, "isaacsim.gui.components": components})
     return ctx, commands
