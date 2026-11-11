@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.3.0] - 2026-11-11
+### Added
+- Modeler: box / cylinder / sphere / capsule / cone / link bodies with material density presets,
+  analytic mass, centre of mass and principal inertia (checked against numeric integration),
+  body types (dynamic, kinematic, static, visual), placement on a prim or an anchor, and editable
+  parameters. Links carry PinA / PinB anchors.
+- Analysis: per-physics-step recording of articulation joint positions, DOF forces and joint
+  reactions (SI units), plot with summary, CSV export. Verified against exact answers
+  (0.00 % on single bodies, within 0.4 % on the 3-stage scissor lift).
+- `mechanisms.scissor_actuator_force()` static solution; scissor drive sizing uses it.
+- Validation: non-fixed joint from the world into an articulation.
+- `extension.get_window()` for scripting.
+
+### Changed
+- Templates build their bodies with the modeler (explicit inertia); scissor arms are links.
+- Pendulum chain hangs from a support link fixed to the world (PhysX articulations attach to
+  the world with a fixed joint only).
+
+### Fixed
+- Modeler masses and recorded forces respect metersPerUnit / kilogramsPerUnit.
+
 ## [0.2.0] - 2026-11-11
 Verified in Isaac Sim 6.1.0 (Kit 110, Windows) with PhysX and Newton.
 

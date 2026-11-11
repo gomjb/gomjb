@@ -48,6 +48,9 @@ def test_templates_have_consistent_joints(stage, name):
         assert dp < 1e-5 and da < 1e-3, jp
     errors = [i for i in va.validate(stage) if i.severity == va.ERROR or "articulation" in i.message]
     assert not errors, va.format_report(errors)
+    # every template hangs off one base link fixed to the world (PhysX articulation root rule)
+    world_joints = [jp for jp in result["joints"] if jt.joint_bodies(stage.GetPrimAtPath(jp))[0] is None]
+    assert len(world_joints) == 1 and stage.GetPrimAtPath(world_joints[0]).IsA(UsdPhysics.FixedJoint)
 
 
 def test_scissor_geometry(stage):
@@ -71,6 +74,34 @@ def test_scissor_geometry(stage):
     span = s0[0] - q0[0]
     assert span == pytest.approx(math.cos(math.radians(30)))
     assert span + me.scissor_slider_offset(1.0, 30, 50) == pytest.approx(math.cos(math.radians(50)))
+
+
+@pytest.mark.parametrize("stages,sides,angle", [(3, 2, 20.0), (2, 1, 35.0), (4, 2, 50.0)])
+def test_scissor_actuator_force_matches_built_model(stages, sides, angle):
+    """Virtual work on the actual USD model: F = dV/dx from the bodies' masses and COM heights."""
+    from pxr import Usd, UsdGeom
+    from gomjb.physics_designer.core import modeling as md
+
+    L, dth = 1.2, 1e-4
+
+    def potential(theta):
+        s = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(s, UsdGeom.Tokens.z)
+        res = me.build_scissor_lift(s, stages=stages, sides=sides, angle=theta, arm_length=L)
+        v = 0.0
+        for p in res["bodies"]:
+            if p.endswith("/Base"):
+                continue
+            prim = s.GetPrimAtPath(p)
+            props = md.body_mass_properties(prim)
+            v += props.mass * 9.81 * tf.world_matrix(prim).Transform(props.com)[2]
+        return v
+
+    dv = potential(angle + dth) - potential(angle)
+    dx = L * (math.cos(math.radians(angle + dth)) - math.cos(math.radians(angle)))
+    expected = abs(dv / dx) / (1 if sides == 1 else 2)
+    analytic = me.scissor_actuator_force(L, angle, stages, platform_mass=20.0, arm_mass=5.0, sides=sides)
+    assert analytic == pytest.approx(expected, rel=1e-3)
 
 
 @pytest.mark.parametrize("sides", [1, 2])

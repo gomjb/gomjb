@@ -35,16 +35,6 @@ def _rigid_ancestor(prim: Usd.Prim) -> Optional[Usd.Prim]:
     return None
 
 
-def _articulation_root(prim: Usd.Prim) -> Optional[Usd.Prim]:
-    """The prim itself or nearest ancestor carrying ArticulationRootAPI."""
-    p = prim
-    while p and not p.IsPseudoRoot():
-        if p.HasAPI(UsdPhysics.ArticulationRootAPI):
-            return p
-        p = p.GetParent()
-    return None
-
-
 def _has_closed_loop_articulation(stage: Usd.Stage) -> bool:
     """A joint excluded from the articulation that still links two bodies of one articulation."""
     for prim in stage.Traverse():
@@ -52,7 +42,7 @@ def _has_closed_loop_articulation(stage: Usd.Stage) -> bool:
             continue
         b0, b1 = jt.joint_bodies(prim)
         if b0 is not None and b1 is not None:
-            r0, r1 = _articulation_root(b0), _articulation_root(b1)
+            r0, r1 = ph.articulation_root_of(b0), ph.articulation_root_of(b1)
             if r0 is not None and r1 is not None and r0.GetPath() == r1.GetPath():
                 return True
     return False
@@ -142,10 +132,17 @@ def _check_joint(joint: Usd.Prim, pos_tol: float, rot_tol: float) -> List[Issue]
         out.append(Issue(ERROR, path, f"Joint frames disagree by {dp:.4g} units / {da:.3g} deg: bodies will jump "
                                       "when simulation starts.", fix="realign_joint"))
     if b0 is not None and b1 is not None and not j.GetExcludeFromArticulationAttr().Get() \
-            and _articulation_root(b0) is None and _articulation_root(b1) is None:
-        out.append(Issue(WARNING, path, "Joint between two bodies outside any articulation: Newton (the default "
-                                        "engine of the Isaac Sim 6 full app) rejects it. Put ArticulationRootAPI on "
-                                        "the mechanism's root prim (PhysX accepts both)."))
+            and ph.articulation_root_of(b0) is None and ph.articulation_root_of(b1) is None:
+        out.append(Issue(WARNING, path, "Joint between two bodies outside any articulation: Newton "
+                                        "(isaac-sim.newton) rejects it. Put ArticulationRootAPI on the mechanism's "
+                                        "root prim (PhysX accepts both)."))
+    world_side = b1 if b0 is None else (b0 if b1 is None else None)
+    if world_side is not None and not joint.IsA(UsdPhysics.FixedJoint) \
+            and not j.GetExcludeFromArticulationAttr().Get() and ph.articulation_root_of(world_side) is not None:
+        out.append(Issue(WARNING, path, "Non-fixed joint to the world inside an articulation: PhysX attaches "
+                                        "articulations to the world with a fixed joint only, so this joint is "
+                                        "simulated outside the articulation and its DOF/forces are not reported. "
+                                        "Fix a base link to the world and put this joint on the base link."))
     if joint.IsA(UsdPhysics.RevoluteJoint) or joint.IsA(UsdPhysics.PrismaticJoint):
         typed = UsdPhysics.RevoluteJoint(joint) if joint.IsA(UsdPhysics.RevoluteJoint) else UsdPhysics.PrismaticJoint(joint)
         lo, hi = typed.GetLowerLimitAttr().Get(), typed.GetUpperLimitAttr().Get()

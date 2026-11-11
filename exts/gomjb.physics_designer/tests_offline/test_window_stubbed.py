@@ -24,7 +24,7 @@ def env(stage):
     win = PhysicsDesignerWindow()
     yield win, ctx, commands
     for mod in [m for m in list(sys.modules) if m.startswith("gomjb.physics_designer") or m.startswith("omni")
-                or m == "carb"]:
+                or m.startswith("isaacsim") or m == "carb"]:
         del sys.modules[mod]
 
 
@@ -51,7 +51,8 @@ def test_every_button_runs_without_crashing(env):
             select(ctx, "/World/A", "/World/B")
             w.kwargs["clicked_fn"]()
             assert "failed" not in status(win) or any(
-                k in status(win) for k in ("select two anchors", "select joint prims", "no snap point")
+                k in status(win) for k in ("select two anchors", "select joint prims", "no snap point",
+                                           "select bodies created by the modeler")
             ), f"{w.args[0]}: {status(win)}"
 
 
@@ -173,3 +174,86 @@ def test_designer_edit_context_manager(env):
             transform.translate([base], (9, 0, 0))
             raise RuntimeError("abort")
     assert transform.world_position(base)[0] == pytest.approx(0.0)
+
+
+def _combo(combo, item):
+    combo.widget.model.select(list(combo.items).index(item))
+
+
+def test_modeler_link_on_anchor_and_undo(env):
+    win, ctx, commands = env
+    from gomjb.physics_designer.core import math_utils as mu
+    from gomjb.physics_designer.core import modeling as md
+    from gomjb.physics_designer.core import transform as tf
+
+    _combo(win._anchor_loc, "+X face")
+    select(ctx, "/World/A")
+    click("Create anchor on selection")
+    anchor = ctx.stage.GetPrimAtPath(ctx.selection.paths[0])
+    m = win.modeler
+    _combo(m._shape, "link")
+    _combo(m._place, "At selected anchor")
+    _combo(m._material, "aluminum")
+    select(ctx, str(anchor.GetPath()))
+    click("Create body")
+    assert "mass" in status(win), status(win)
+    link = ctx.stage.GetPrimAtPath(ctx.selection.paths[0])
+    assert md.body_params(link)["shape"] == "link"
+    assert mu.is_close(tf.world_position(link.GetChild("PinA")), tf.world_position(anchor), 1e-9)
+    commands.undo()
+    assert not ctx.stage.GetPrimAtPath(link.GetPath())
+
+
+def test_modeler_load_and_apply(env):
+    win, ctx, _ = env
+    from gomjb.physics_designer.core import modeling as md
+
+    m = win.modeler
+    _combo(m._shape, "box")
+    click("Create body")
+    box = ctx.selection.paths[0]
+    mass0 = md.body_mass_properties(ctx.stage.GetPrimAtPath(box)).mass
+    _combo(m._shape, "sphere")  # load must switch the form back to the body's shape
+    click("Load from selected")
+    assert m._shape.value == "box" and len(m._dim_inputs) == 3
+    m._dim_inputs[0].value = m._dim_inputs[0].value * 2
+    click("Apply to selected")
+    assert md.body_mass_properties(ctx.stage.GetPrimAtPath(box)).mass == pytest.approx(2 * mass0)
+
+
+def test_analysis_plot_summary_and_csv(env, tmp_path):
+    win, ctx, _ = env
+    from gomjb.physics_designer.core.results import Recording
+
+    rec = Recording("lift")
+    for i in range(4):
+        rec.add_sample(i / 60, {"pos:Actuator_L": -0.01 * i, "force:Actuator_L": -1000.0 - i,
+                                "force:Hinge": 2.0, "link_force:Platform:x": 3.0,
+                                "link_force:Platform:y": 0.0, "link_force:Platform:z": 4.0})
+    rec.units["force:Actuator_L"] = "N"
+    win.analysis._recorder = type("FakeRecorder", (), {"recording": rec, "unavailable": [], "stop": lambda s: None})()
+    win.analysis._filter.model.set_value("Actuator")
+    win.analysis.refresh_plot()
+    plot = win.analysis._plot  # the plot is rebuilt on every refresh
+    assert plot.legends == ["Actuator_L"] and plot.y_data[0][-1] == -1003.0
+    assert plot.y_min < -1003.0 and plot.y_max > -1000.0 and (plot.x_min, plot.x_max) == (0.0, 3 / 60)
+    assert "Actuator_L: min -1003  max -1000  final -1003 N" in win.analysis._summary_model.as_string
+    from gomjb.physics_designer.ui.analysis_section import SERIES_COLORS
+
+    assert plot.colors == [SERIES_COLORS[0]]
+    win.analysis._filter.model.set_value("")
+    win.analysis.refresh_plot()
+    plot = win.analysis._plot  # the plot is rebuilt on every refresh
+    assert plot.legends == ["Actuator_L", "Hinge"] and plot.colors == SERIES_COLORS[:2]
+    win.analysis._filter.model.set_value("Hinge")
+    win.analysis.refresh_plot()
+    plot = win.analysis._plot  # the plot is rebuilt on every refresh
+    assert plot.colors == [SERIES_COLORS[1]]  # the survivor keeps its color
+    _combo(win.analysis._kind, "Joint reaction |F|")
+    win.analysis._filter.model.set_value("")
+    win.analysis.refresh_plot()
+    plot = win.analysis._plot  # the plot is rebuilt on every refresh
+    assert plot.legends == ["Platform"] and plot.y_data[0][0] == pytest.approx(5.0)
+    win.analysis._csv.model.set_value(str(tmp_path / "out.csv"))
+    click("Export CSV")
+    assert (tmp_path / "out.csv").read_text(encoding="utf-8").startswith("time [s],pos:Actuator_L")

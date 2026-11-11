@@ -163,10 +163,26 @@ def install():
     ext = types.ModuleType("omni.ext")
     ext.IExt = object
 
+    class XYPlot:
+        """isaacsim.gui.components.XYPlot stand-in: remembers the data it was given."""
+
+        def __init__(self, label, x_data=None, y_data=None, legends=None, plot_colors=None, x_min=None,
+                     x_max=None, y_min=None, y_max=None, **kwargs):
+            self.x_data, self.y_data, self.legends = x_data or [], y_data or [], legends or []
+            self.colors = [list(c) for c in plot_colors or []]
+            self.x_min, self.x_max, self.y_min, self.y_max = x_min, x_max, y_min, y_max
+
+    isaacsim = types.ModuleType("isaacsim")
+    gui = types.ModuleType("isaacsim.gui")
+    components = types.ModuleType("isaacsim.gui.components")
+    components.XYPlot = XYPlot
+    isaacsim.gui, gui.components = gui, components
+
     omni = types.ModuleType("omni")
     kit = types.ModuleType("omni.kit")
     omni.ui, omni.usd, omni.kit, omni.ext = ui, usd, kit, ext
     kit.commands, kit.app = commands, app
     sys.modules.update({"omni": omni, "omni.ui": ui, "omni.usd": usd, "omni.kit": kit, "omni.kit.commands": commands,
-                        "omni.kit.app": app, "omni.ext": ext, "carb": carb})
+                        "omni.kit.app": app, "omni.ext": ext, "carb": carb, "isaacsim": isaacsim,
+                        "isaacsim.gui": gui, "isaacsim.gui.components": components})
     return ctx, commands

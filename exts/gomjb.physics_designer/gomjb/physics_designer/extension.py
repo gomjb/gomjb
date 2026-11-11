@@ -1,27 +1,31 @@
 """Kit extension entry point: registers commands, the Tools menu entry and the window."""
 from __future__ import annotations
 
+from typing import Optional
+
 import omni.ext
 import omni.ui as ui
+from omni.kit.menu.utils import MenuItemDescription, add_menu_items, remove_menu_items
 
 from . import commands
 
 MENU_PATH = "Tools"
+_instance: Optional["PhysicsDesignerExtension"] = None
+
+
+def get_window():
+    """The open Physics Designer window (for scripting), or None."""
+    return _instance._window if _instance is not None else None
 
 
 class PhysicsDesignerExtension(omni.ext.IExt):
     def on_startup(self, ext_id: str):
-        self._ext_id = ext_id
+        global _instance
+        _instance = self
         self._window = None
         commands.register()
-        self._menu_items = []
-        try:
-            from omni.kit.menu.utils import MenuItemDescription, add_menu_items
-
-            self._menu_items = [MenuItemDescription(name="Physics Designer", onclick_fn=self.toggle_window)]
-            add_menu_items(self._menu_items, MENU_PATH)
-        except ImportError:  # headless / minimal apps
-            pass
+        self._menu_items = [MenuItemDescription(name="Physics Designer", onclick_fn=self.toggle_window)]
+        add_menu_items(self._menu_items, MENU_PATH)
         ui.Workspace.set_show_window_fn("Physics Designer", lambda visible: self._show(visible))
         self._show(True)
 
@@ -37,13 +41,11 @@ class PhysicsDesignerExtension(omni.ext.IExt):
             self._window.visible = visible
 
     def on_shutdown(self):
-        if self._menu_items:
-            from omni.kit.menu.utils import remove_menu_items
-
-            remove_menu_items(self._menu_items, MENU_PATH)
-            self._menu_items = []
+        global _instance
+        remove_menu_items(self._menu_items, MENU_PATH)
         ui.Workspace.set_show_window_fn("Physics Designer", None)
         if self._window is not None:
             self._window.destroy()
             self._window = None
         commands.unregister()
+        _instance = None

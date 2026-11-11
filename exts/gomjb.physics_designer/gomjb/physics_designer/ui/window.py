@@ -18,7 +18,9 @@ from ..core import snapping as sn
 from ..core import transform as tf
 from ..core import validation as va
 from ..core.stage_utils import prims_from_paths
+from .analysis_section import AnalysisSection
 from .live_snap import LiveSnap
+from .modeler_section import ModelerSection
 from .widgets import (BoolInput, ComboInput, FloatInput, IntInput, StringInput, Vec3Input, button_row, hint,
                       section)
 
@@ -50,6 +52,8 @@ class PhysicsDesignerWindow(ui.Window):
         self._validation_model = ui.SimpleStringModel("Press 'Validate stage' to check the physics setup.")
         self._issues: List[va.Issue] = []
         self._template_inputs: Dict[str, object] = {}
+        self.modeler = ModelerSection(self)
+        self.analysis = AnalysisSection(self)
         self._stage_sub = omni.usd.get_context().get_stage_event_stream().create_subscription_to_pop(
             self._on_stage_event, name="gomjb.physics_designer.window"
         )
@@ -58,6 +62,7 @@ class PhysicsDesignerWindow(ui.Window):
 
     def destroy(self):
         self._live_snap.stop()
+        self.analysis.stop(refresh=False)
         self._stage_sub = None
         super().destroy()
 
@@ -134,6 +139,7 @@ class PhysicsDesignerWindow(ui.Window):
                 ui.StringField(model=self._selection_model, read_only=True)
             with ui.ScrollingFrame(horizontal_scrollbar_policy=ui.ScrollBarPolicy.SCROLLBAR_ALWAYS_OFF):
                 with ui.VStack(spacing=6, height=0):
+                    self.modeler.build()
                     self._build_move()
                     self._build_snap()
                     self._build_anchor()
@@ -141,6 +147,7 @@ class PhysicsDesignerWindow(ui.Window):
                     self._build_physics()
                     self._build_templates()
                     self._build_validate()
+                    self.analysis.build()
             with ui.HStack(height=20):
                 ui.StringField(model=self._status_model, read_only=True)
 
@@ -148,7 +155,7 @@ class PhysicsDesignerWindow(ui.Window):
     # Move / rotate / align
     # ---------------------------------------------------------------------------------
     def _build_move(self):
-        with section("Move & Rotate", collapsed=False):
+        with section("Move & Rotate"):
             with ui.VStack(spacing=3):
                 self._move_step = FloatInput("Move step", 0.1, "Distance per nudge (stage units)")
                 self._move_space = ComboInput("Space", ["world", "local"])

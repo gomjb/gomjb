@@ -38,6 +38,27 @@ Newton(`isaac-sim.newton.bat`) 양쪽에서 5개 템플릿을 시뮬레이션해
 
 창의 글자는 영어입니다. Isaac Sim 기본 UI 폰트에 한글 글리프가 없어 한글이 `?`로 표시되기 때문입니다.
 
+### 2.0 Modeler (모델러)
+RecurDyn·Adams의 바디 관례를 따라 **물리 준비가 끝난 강체**를 만듭니다. 바디 하나는 기준 좌표계, 형상,
+재질, 질량 특성으로 이루어집니다. Isaac의 `Create > Shape`와 달리 바디 좌표계에는 스케일이 없어서 조인트와
+앵커가 틀어지지 않습니다.
+
+| 형상 | 치수 |
+|---|---|
+| Box | size x / y / z |
+| Cylinder, Capsule, Cone | radius, height (Z축) |
+| Sphere | radius |
+| **Link** | pin distance, width, thickness — 양 끝이 둥근 막대, 양 끝 핀에 앵커 `PinA` / `PinB` 자동 생성(앵커 Z축 = 핀 축) |
+
+* **재질**: steel·stainless·aluminum·cast_iron·brass·abs_plastic·wood·rubber 밀도 프리셋, 또는 밀도·질량 직접 입력
+  (입력은 SI: kg/m³, kg — 스테이지 단위(m/cm)로 자동 환산)
+* **질량 특성**: 질량·무게중심·주관성모멘트를 **해석식으로 계산해 명시적으로 기록**합니다(수치 적분으로 1% 이내 검증).
+  충돌체가 없는 바디도 올바른 관성을 가집니다.
+* **바디 종류**: dynamic / kinematic / static(충돌체만) / visual(물리 없음)
+* **배치**: 지정 위치·자세, 선택 객체 위에 올리기, 선택한 앵커에 붙이기(Link는 `PinA`를 앵커에 맞춤)
+* **Load from selected / Apply to selected**: 치수·재질·질량을 나중에 바꾸면 형상·질량·핀 앵커가 함께 갱신됩니다.
+  (핀 위치가 바뀌면 붙어 있던 조인트는 *Realign selected joints* 로 다시 맞추세요.)
+
 ### 2.1 Move & Rotate (객체 이동)
 | 기능 | 설명 |
 |---|---|
@@ -105,7 +126,7 @@ boundingCube·boundingSphere), 질량·밀도, 물리 머티리얼(정/동마찰
 
 | 템플릿 | 구성 |
 |---|---|
-| Pendulum chain | 캡슐 링크 N개 + revolute 연쇄, 초기 각도, 감쇠 |
+| Pendulum chain | 월드에 고정된 지지 링크 + 캡슐 링크 N개 revolute 연쇄, 초기 각도, 감쇠 |
 | Hydraulic cylinder | 배럴 + 로드 + 구동 prismatic(스트로크 제한, PD 드라이브), 장착 앵커 `MountBase`/`MountRod` |
 | Hinged door | 고정 포스트 + 도어 패널, 개방각 제한 revolute + 댐핑 |
 | Linear slider | 고정 레일 + 캐리지, 행정 제한 prismatic |
@@ -136,7 +157,40 @@ Isaac Sim 6.1 실측 (3단, 팔 1.2 m, 20°, 목표 핀 높이 2.2 m):
 * 중첩된 rigid body, 충돌체/질량 없는 rigid body(→ 충돌체 추가), 비균일 스케일
 * 동적 body의 triangle-mesh 충돌체(→ convexHull), PhysicsScene 없음(→ 생성)
 * articulation 밖에서 두 body를 잇는 조인트 (Newton이 거부)
+* articulation 안에서 월드에 직접 붙은 non-fixed 조인트 (PhysX는 월드-루트 사이에 fixed만 허용 → 그 DOF와 힘이
+  articulation에서 빠짐. 월드에 고정한 베이스 링크를 두고 그 위에 조인트를 거세요)
 * GPU 물리 + 폐루프 articulation 조합(→ CPU 물리로 전환)
+
+### 2.8 Analysis (결과 기록·그래프)
+기구를 선택하고 *Use selection* → *Start recording* → Play 하면 **매 물리 스텝마다** articulation의 상태를
+기록합니다(Isaac Sim 6 텐서 API = 실제 시뮬레이션 값, SI 단위로 환산).
+
+| 채널 | 내용 | 단위 |
+|---|---|---|
+| `pos:<DOF>` | 조인트 위치 | deg / m |
+| `force:<DOF>` | DOF 축 방향 힘(드라이브·액추에이터 힘) | N·m / N |
+| `link_force:<link>:x/y/z`, `link_torque:...` | 링크로 들어오는 조인트의 6축 반력 (자식 조인트 좌표계) | N / N·m |
+
+* *Plot*: DOF 힘 / DOF 위치 / 조인트 반력 크기, *Name filter* 로 채널 선택(최대 8계열, 색은 채널에 고정)
+* 요약(최소·최대·최종값)과 그래프(Isaac `XYPlot`), *Export CSV*(Excel·pandas에서 바로 열림)
+* 측정되지 않는 것: 루프를 닫는 조인트(articulation 제외) 반력 — PhysX 텐서 API가 제공하지 않음.
+  Newton은 힘을 제공하지 않아 위치만 기록됩니다.
+
+**정확도 검증 (Isaac Sim 6.1, PhysX CPU)** — 정답이 알려진 문제와 비교:
+
+| 케이스 | 측정 | 기준 | 오차 |
+|---|---|---|---|
+| 수직 프리즘 10 kg 지지력 | 98.100 N | m·g = 98.100 N | 0.00 % |
+| 수평 링크 2 kg × 0.5 m 지지 토크 | 9.8100 N·m | 9.8100 N·m | 0.00 % |
+| 시저 1단·한쪽 액추에이터 힘 | 443.61 N | 가상일 해석해 443.63 N | −0.01 % |
+| 시저 3단·양쪽, 좌우 합 (높이 1.5–2.5 m, 올림·내림) | 1589–3354 N | 해석해 | **±0.4 % 이내** |
+
+해석해 `mechanisms.scissor_actuator_force()` 는 실제 USD 모델의 위치에너지 수치미분과 0.1 % 이내로 일치합니다.
+
+> **양쪽(좌·우) 시저의 좌우 분담은 강체 모델로 정해지지 않습니다.** 두 쪽이 같은 플랫폼을 받치는 정역학적
+> 부정정 구조라서, 합은 정확하지만(위 표) 좌우 비율은 솔버가 중복 구속을 처리하는 방식에 따라 달라집니다
+> (실측 1358.8 N 대 1298.1 N). RecurDyn·Adams도 중복 구속에서는 같은 성질이 있으며, 실제 분담을 알려면
+> 부싱·유연체로 강성을 넣어야 합니다.
 
 ---
 
@@ -192,16 +246,19 @@ exts/gomjb.physics_designer/
 ├── gomjb/physics_designer/
 │   ├── extension.py        # IExt: 커맨드 등록, Tools 메뉴, 창
 │   ├── commands.py         # PhysicsDesignerEditCommand, run_edit(), designer_edit()
+│   ├── recording.py        # Analysis: 물리 스텝마다 articulation 상태·힘 기록 (Isaac Sim 런타임)
 │   ├── core/               # Kit 비의존 (pxr만 사용)
 │   │   ├── math_utils.py   # 양자화, 회전/프레임, 분해/합성
 │   │   ├── transform.py    # 월드 기준 이동/회전/정렬/분배/드롭
 │   │   ├── snapping.py     # 격자/각도/타깃/최근접점/면맞춤/앵커
 │   │   ├── joints.py       # 조인트 생성, 로컬 프레임 계산, 재정렬
 │   │   ├── physics.py      # rigid body, collider, mass, material, scene
-│   │   ├── mechanisms.py   # 파라메트릭 템플릿
+│   │   ├── modeling.py     # 모델러: 형상 바디, 해석적 질량 특성, Link 핀 앵커
+│   │   ├── mechanisms.py   # 파라메트릭 템플릿 + 시저 해석해
+│   │   ├── results.py      # 시계열 기록, CSV
 │   │   ├── validation.py   # 검사 + 자동 수정
 │   │   └── snapshot.py     # 경로 단위 Undo 스냅샷
-│   ├── ui/                 # omni.ui 창, 위젯, 라이브 스냅
+│   ├── ui/                 # omni.ui 창(+ modeler_section, analysis_section), 위젯, 라이브 스냅
 │   └── tests/              # Kit 테스트 러너용 테스트
 ├── tests_offline/          # pytest + usd-core (Kit 없이 실행)
 └── examples/

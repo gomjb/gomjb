@@ -165,6 +165,16 @@ def apply_articulation_root(prim: Usd.Prim) -> None:
     UsdPhysics.ArticulationRootAPI.Apply(prim)
 
 
+def articulation_root_of(prim: Usd.Prim) -> Optional[Usd.Prim]:
+    """The prim itself or its nearest ancestor carrying ArticulationRootAPI."""
+    p = prim
+    while p and not p.IsPseudoRoot():
+        if p.HasAPI(UsdPhysics.ArticulationRootAPI):
+            return p
+        p = p.GetParent()
+    return None
+
+
 def ensure_physics_scene(stage: Usd.Stage, path: Optional[str] = None, gravity: float = 9.81) -> Usd.Prim:
     """Return the first PhysicsScene or create one with gravity along -up (in stage units).
 

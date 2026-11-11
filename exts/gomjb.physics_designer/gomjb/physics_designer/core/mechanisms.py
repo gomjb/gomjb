@@ -18,10 +18,11 @@ from __future__ import annotations
 import math
 from typing import Dict, List, Optional
 
-from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
+from pxr import Gf, Sdf, Usd, UsdGeom
 
 from . import joints as jt
 from . import math_utils as mu
+from . import modeling as md
 from . import physics as ph
 from . import transform as tf
 from .snapping import create_anchor
@@ -66,43 +67,15 @@ class _Builder:
 
     # -- bodies ------------------------------------------------------------------------
     def body(self, name: str, pos, shape: str, dims, rot=None, color=STEEL, mass: Optional[float] = None,
-             collider: bool = True, dynamic: bool = True, geom_offset=(0, 0, 0)) -> Usd.Prim:
-        """Rigid body Xform with one child shape.
+             collider: bool = True, geom_offset=(0, 0, 0)) -> Usd.Prim:
+        """Modeler body (see :func:`modeling.create_body`) placed in the root frame.
 
-        ``shape``: "box" (dims = sx, sy, sz), "cylinder" (dims = radius, height; axis Z) or
-        "capsule" (dims = radius, height; axis Z).  ``geom_offset`` shifts the shape inside
-        the body (so the body origin can sit on a pivot).
+        ``geom_offset`` shifts the shape inside the body so the body origin can sit on a pivot.
         """
         path = unique_child_path(self.stage, self.root_path, name)
-        prim = UsdGeom.Xform.Define(self.stage, path).GetPrim()
+        prim = md.create_body(self.stage, path, shape, dims, mass=mass, collision=collider, color=color,
+                              offset=geom_offset)
         tf.set_local_matrix(prim, mu.make_transform(pos, rot))
-        gpath = path.AppendChild("geom")
-        if shape == "box":
-            g = UsdGeom.Cube.Define(self.stage, gpath)
-            g.CreateSizeAttr(1.0)
-            gx = UsdGeom.Xformable(g)
-            gx.AddTranslateOp().Set(mu.vec3d(geom_offset))
-            gx.AddScaleOp().Set(mu.vec3d(dims))
-            g.CreateExtentAttr([-Gf.Vec3f(0.5), Gf.Vec3f(0.5)])
-        elif shape in ("cylinder", "capsule"):
-            g = (UsdGeom.Cylinder if shape == "cylinder" else UsdGeom.Capsule).Define(self.stage, gpath)
-            g.CreateRadiusAttr(float(dims[0]))
-            g.CreateHeightAttr(float(dims[1]))
-            g.CreateAxisAttr("Z")
-            UsdGeom.Xformable(g).AddTranslateOp().Set(mu.vec3d(geom_offset))
-            r, h = float(dims[0]), float(dims[1])
-            half_h = h / 2 + (r if shape == "capsule" else 0)
-            g.CreateExtentAttr([Gf.Vec3f(-r, -r, -half_h), Gf.Vec3f(r, r, half_h)])
-        else:
-            raise ValueError(f"Unknown shape {shape}")
-        g.CreateDisplayColorAttr([color])
-        UsdPhysics.RigidBodyAPI.Apply(prim)
-        if not dynamic:
-            UsdPhysics.RigidBodyAPI(prim).CreateKinematicEnabledAttr().Set(True)
-        if collider:
-            ph.apply_collision([prim])
-        if mass is not None:
-            ph.set_mass([prim], mass=mass)
         self.result["bodies"].append(str(path))
         return prim
 
@@ -127,11 +100,15 @@ def build_pendulum_chain(stage: Usd.Stage, name: str = "PendulumChain", origin=(
                          link_length: float = 0.25, link_radius: float = 0.02, link_mass: float = 0.5,
                          initial_angle: float = 30.0, damping: float = 0.0,
                          parent=None) -> Dict[str, List[str]]:
-    """Chain of capsule links hanging from a world pivot, revolute about local Y."""
+    """Chain of capsule links hanging from a support fixed to the world, revolute about local Y."""
     b = _Builder(stage, name, origin, parent)
     swing = Gf.Rotation(Gf.Vec3d(0, 1, 0), initial_angle)
     down = swing.TransformDir(Gf.Vec3d(0, 0, -1))
-    prev = None
+    # PhysX articulations attach to the world through a fixed joint only: hang the chain from a
+    # fixed support link so the first hinge is an articulation DOF (with readable forces)
+    prev = b.body("Support", (0, 0, 0), "box", (0.08, 0.08, 0.04), color=DARK, mass=1.0, collider=False,
+                  geom_offset=(0, 0, 0.02 + link_radius))
+    b.joint(jt.JointSpec("fixed", name="SupportFixed"), None, prev, (0, 0, 0))
     capsule_h = max(link_length - 2 * link_radius, 1e-4)
     for i in range(links):
         top = down * (link_length * i)
@@ -265,14 +242,14 @@ def build_scissor_lift(stage: Usd.Stage, name: str = "ScissorLift", origin=(0, 0
     lower = scissor_slider_offset(L, angle, 75.0)
     upper = scissor_slider_offset(L, angle, 4.0)
 
-    # actuator drive sized from the lifted weight and the scissor's motion ratio
-    slider_mass = 1.0
+    # actuator drive sized from the static load and the scissor's motion ratio
+    n_sides = len(side_list)
     ratio = stages / math.tan(th)  # platform rise per unit of slider travel
-    lifted = platform_mass + len(side_list) * (2 * stages * arm_mass + 2 * slider_mass)
     gravity = 9.81 / float(UsdGeom.GetStageMetersPerUnit(stage) or 1.0)
-    load = lifted * gravity * ratio / len(side_list)  # per actuator
+    load = scissor_actuator_force(L, angle, stages, platform_mass, arm_mass, SCISSOR_SLIDER_MASS, n_sides, gravity)
     stiffness = load * ratio / sag_tolerance  # slider deflection = sag / ratio
-    damping = 2.0 * math.sqrt(stiffness * lifted * ratio ** 2 / len(side_list))
+    lifted = load / (gravity * ratio) * n_sides  # weight-equivalent mass seen by the platform
+    damping = 2.0 * math.sqrt(stiffness * lifted * ratio ** 2 / n_sides)
 
     for si, s in enumerate(side_list):
         tag = "" if sides == 1 else ("_L" if s < 0 else "_R")
@@ -282,9 +259,10 @@ def build_scissor_lift(stage: Usd.Stage, name: str = "ScissorLift", origin=(0, 0
         arms_a, arms_b = [], []
         for i in range(stages):
             zc = z0 + i * h + h / 2
-            arms_a.append(b.body(f"ArmA{tag}_{i}", (0, y_out, zc), "box", (L, t, a), rot=rot_a, color=STEEL,
+            # links: pin distance L along local X, width a in the lift plane, thickness t; pin axis Y
+            arms_a.append(b.body(f"ArmA{tag}_{i}", (0, y_out, zc), "link", (L, a, t), rot=rot_a, color=STEEL,
                                  mass=arm_mass, collider=arm_collision))
-            arms_b.append(b.body(f"ArmB{tag}_{i}", (0, y_in, zc), "box", (L, t, a), rot=rot_b, color=BLUE,
+            arms_b.append(b.body(f"ArmB{tag}_{i}", (0, y_in, zc), "link", (L, a, t), rot=rot_b, color=BLUE,
                                  mass=arm_mass, collider=arm_collision))
             # articulation tree (body0 = parent, body1 = child, as Newton requires):
             # base → slider → B0 → A0 → links upward; centers above stage 0 close loops
@@ -297,7 +275,7 @@ def build_scissor_lift(stage: Usd.Stage, name: str = "ScissorLift", origin=(0, 0
         # bottom: fixed pin (closes the base loop) + driven slider
         b.joint(pin(f"BasePin{tag}", loop=True), base, arms_a[0], (-w, y_pin, z0))
         slider_b = b.body(f"BaseSlider{tag}", (w, y_pin, z0), "box", (0.08, t, a), color=DARK,
-                          mass=slider_mass, collider=False)
+                          mass=SCISSOR_SLIDER_MASS, collider=False)
         b.joint(pin(f"BaseSliderPin{tag}"), slider_b, arms_b[0], (w, y_pin, z0))
         b.joint(jt.JointSpec("prismatic", name=f"Actuator{tag}", axis="X", lower=lower, upper=upper,
                              drive=jt.DriveSpec(stiffness=stiffness, damping=damping, target_position=0.0)),
@@ -306,13 +284,30 @@ def build_scissor_lift(stage: Usd.Stage, name: str = "ScissorLift", origin=(0, 0
         # top: fixed pin + free slider (the platform joins the tree through the first side only)
         b.joint(pin(f"PlatformPin{tag}", loop=si > 0), arms_b[-1], platform, (-w, y_pin, z_top))
         slider_t = b.body(f"TopSlider{tag}", (w, y_pin, z_top), "box", (0.08, t, a), color=DARK,
-                          mass=slider_mass, collider=False)
+                          mass=SCISSOR_SLIDER_MASS, collider=False)
         # loops close on revolute pins only: MuJoCo (Newton) maps them to "connect" constraints
         # but has no equality constraint for a prismatic loop closure
         b.joint(jt.JointSpec("prismatic", name=f"TopSlide{tag}", axis="X", lower=lower, upper=upper),
                 platform, slider_t, (w, y_pin, z_top))
         b.joint(pin(f"TopSliderPin{tag}", loop=True), arms_a[-1], slider_t, (w, y_pin, z_top))
     return b.result
+
+
+SCISSOR_SLIDER_MASS = 1.0
+
+
+def scissor_actuator_force(arm_length: float, angle: float, stages: int, platform_mass: float, arm_mass: float,
+                           slider_mass: float = SCISSOR_SLIDER_MASS, sides: int = 2, gravity: float = 9.81) -> float:
+    """Static actuator force (per side) holding a scissor lift at arm ``angle`` (deg).
+
+    Virtual work: ``F·dx = Σ m·g·dz`` with slider travel ``x = L·cos θ`` and pin height
+    ``H = n·L·sin θ``.  The platform and top sliders rise with ``H``; the arms of stage ``k``
+    rise with ``(k + ½)/n·H``, so all arms of one side weigh in as ``n·arm_mass``.  The
+    actuator pushes the slider toward the fixed pin (negative X) with this magnitude.
+    """
+    n_sides = 1 if sides == 1 else 2
+    weight = platform_mass + n_sides * (slider_mass + stages * arm_mass)
+    return weight * gravity * stages / math.tan(math.radians(angle)) / n_sides
 
 
 def scissor_height(arm_length: float, angle: float, stages: int) -> float:

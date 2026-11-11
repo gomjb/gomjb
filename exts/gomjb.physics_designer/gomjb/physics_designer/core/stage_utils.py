@@ -62,6 +62,18 @@ def meters_per_unit(stage: Usd.Stage) -> float:
     return float(UsdGeom.GetStageMetersPerUnit(stage) or 1.0)
 
 
+def kilograms_per_unit(stage: Usd.Stage) -> float:
+    from pxr import UsdPhysics
+
+    return float(UsdPhysics.GetStageKilogramsPerUnit(stage) or 1.0)
+
+
+def si_factors(stage: Usd.Stage) -> dict:
+    """Multipliers that turn stage-unit physics quantities into SI (m, kg, N, N*m, kg/m^3)."""
+    m, kg = meters_per_unit(stage), kilograms_per_unit(stage)
+    return {"length": m, "mass": kg, "force": kg * m, "torque": kg * m * m, "density": kg / m ** 3}
+
+
 def find_first(stage: Usd.Stage, predicate) -> Optional[Usd.Prim]:
     for prim in stage.Traverse():
         if predicate(prim):

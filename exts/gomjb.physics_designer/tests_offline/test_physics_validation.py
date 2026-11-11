@@ -83,6 +83,15 @@ def test_gpu_dynamics_with_closed_loop_articulation_is_flagged(stage):
     assert not [i for i in va.validate(stage) if i.fix == "cpu_dynamics"]
 
 
+def test_non_fixed_world_joint_in_articulation_is_flagged(stage):
+    root = UsdGeom.Xform.Define(stage, "/World/Mech").GetPrim()
+    ph.apply_articulation_root(root)
+    arm = make_cube(stage, "/World/Mech/Arm")
+    ph.apply_rigid_body([arm])
+    jt.create_joint(stage, jt.JointSpec("revolute"), None, arm, (0, 0, 0))
+    assert [i for i in va.validate(stage) if "fixed joint only" in i.message]
+
+
 def test_open_chain_articulation_on_gpu_is_not_flagged(stage):
     from gomjb.physics_designer.core import mechanisms as me
 

@@ -13,6 +13,7 @@ class TestPhysicsDesignerWindow(omni.kit.test.AsyncTestCase):
         await omni.usd.get_context().new_stage_async()
         self.stage = omni.usd.get_context().get_stage()
         UsdGeom.SetStageUpAxis(self.stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(self.stage, 1.0)  # Isaac Sim default (the bare test app uses cm)
         self.stage.SetDefaultPrim(UsdGeom.Xform.Define(self.stage, "/World").GetPrim())
         for name, x in (("A", 0.0), ("B", 2.0)):
             UsdGeom.Xformable(UsdGeom.Cube.Define(self.stage, f"/World/{name}")).AddTranslateOp().Set((x, 0, 0))
@@ -54,3 +55,44 @@ class TestPhysicsDesignerWindow(omni.kit.test.AsyncTestCase):
         self.window._validate()
         report = self.window._validation_model.as_string
         self.assertNotIn("[ERROR]", report)
+
+    async def test_modeler_creates_link_with_mass_properties(self):
+        from ..core import modeling as md
+
+        m = self.window.modeler
+        m._shape.widget.model.get_item_value_model().set_value(list(m._shape.items).index("link"))
+        for _ in range(3):
+            await omni.kit.app.get_app().next_update_async()
+        m.create()
+        body = self.stage.GetPrimAtPath(omni.usd.get_context().get_selection().get_selected_prim_paths()[0])
+        self.assertEqual(md.body_params(body)["shape"], "link")
+        self.assertGreater(md.body_mass_properties(body).mass, 0.0)
+        self.assertTrue(body.GetChild("PinA") and body.GetChild("PinB"))
+
+    async def test_analysis_records_actuator_forces(self):
+        import math
+
+        import omni.timeline
+
+        from ..commands import run_edit
+        from ..core import mechanisms as me
+        from ..core import physics as ph
+
+        res = run_edit(lambda s: (ph.ensure_physics_scene(s), me.build_scissor_lift(s, stages=2, angle=30.0))[-1])
+        analysis = self.window.analysis
+        analysis._root.model.set_value(res["root"][0])
+        analysis.start()
+        timeline = omni.timeline.get_timeline_interface()
+        timeline.play()
+        for _ in range(180):
+            await omni.kit.app.get_app().next_update_async()
+        timeline.stop()
+        analysis.stop()
+        rec = analysis.recording
+        self.assertGreater(len(rec), 60)
+        pos = rec.channels["pos:Actuator_L"][-1]
+        theta = math.degrees(math.acos(math.cos(math.radians(30.0)) + pos / 1.2))
+        total = abs(rec.channels["force:Actuator_L"][-1]) + abs(rec.channels["force:Actuator_R"][-1])
+        expected = 2 * me.scissor_actuator_force(1.2, theta, 2, 20.0, 5.0, sides=2)
+        self.assertAlmostEqual(total / expected, 1.0, delta=0.02)
+        self.assertIn("Actuator_L", analysis._summary_model.as_string)
