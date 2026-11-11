@@ -27,7 +27,10 @@ isaac-sim.bat --ext-folder <repo>\exts --enable gomjb.physics_designer
 
 검증 환경: **Isaac Sim 6.1.0 (Kit 110, Windows, RTX 5060 Ti)** — PhysX(기본 `isaac-sim.bat`)와
 Newton(`isaac-sim.newton.bat`) 양쪽에서 5개 템플릿을 시뮬레이션해 확인했습니다.
-외부 의존성은 없고 물리 스키마는 USD 표준 `UsdPhysics`만 사용합니다.
+물리 스키마는 USD 표준 `UsdPhysics`만 사용합니다. 외부 패키지는 정확해석기(2.9)의
+[Exudyn](https://github.com/jgerstmayr/EXUDYN) 하나이며, 확장을 켤 때 Kit의 `[python.pipapi]`가
+`exudyn==1.13.6`을 설치합니다(`--no-deps`: 유일한 의존성 numpy는 Kit에 포함). 인터넷이 없는 PC에서는
+Isaac Sim의 `python.bat -m pip install exudyn==1.13.6` 으로 미리 설치하세요.
 
 ---
 
@@ -189,14 +192,87 @@ Isaac Sim 6.1 실측 (3단, 팔 1.2 m, 20°, 목표 핀 높이 2.2 m):
 
 > **양쪽(좌·우) 시저의 좌우 분담은 강체 모델로 정해지지 않습니다.** 두 쪽이 같은 플랫폼을 받치는 정역학적
 > 부정정 구조라서, 합은 정확하지만(위 표) 좌우 비율은 솔버가 중복 구속을 처리하는 방식에 따라 달라집니다
-> (실측 1358.8 N 대 1298.1 N). RecurDyn·Adams도 중복 구속에서는 같은 성질이 있으며, 실제 분담을 알려면
-> 부싱·유연체로 강성을 넣어야 합니다.
+> (실측 1358.8 N 대 1298.1 N). 상용 MBD 툴도 같은 성질이 있으며(2.10), 강성으로 분담을 구하려면
+> 정확해석기의 *bushings* 모드를 쓰세요(2.9).
+
+### 2.9 Exact solver (정확해석기, Exudyn)
+Analysis 섹션 아래쪽. PhysX 시뮬레이션(근사, 0.1–0.5 % 오차)과 별도로, 같은 USD 모델을 **구속 방정식
+기반 다물체 동역학**으로 풉니다. RecurDyn·Adams와 같은 방식입니다.
+
+* 바디: RigidBodyAPI + MassAPI(질량·질량중심·주관성)를 그대로 사용 — 모델러가 만든 값.
+  kinematic 바디와 바디가 아닌 조인트 대상은 ground.
+* 조인트: fixed / revolute / prismatic / spherical / D6(잠긴 축)이 **정확한 구속**이 되고, 루프를 닫는
+  조인트(`excludeFromArticulation`)도 포함됩니다. 라그랑주 승수가 곧 조인트 반력입니다.
+* 드라이브(stiffness > 0)는 목표값으로 **위치 지정 구동**(RecurDyn의 Motion)이 되고, 그 승수가 정확한
+  액추에이터 힘입니다. damping만 있는 드라이브와 조인트 리밋은 해석에 들어가지 않습니다(요약에 표시).
+* *Solve static*: 현재 드라이브 목표에서의 정적 평형. *Sweep drive*: 드라이브를 *From*→*To* 로 움직이며 각
+  점에서 정적 평형(x축 = 드라이브 값). *Sweep drives* 를 비우면 모든 드라이브를 함께 움직입니다(양쪽 리프트).
+* 결과 채널은 기록과 같고(`pos:`, `force:`) 조인트별 6축 반력이 `joint_force:<joint>:x/y/z`,
+  `joint_torque:...`(조인트 좌표계, body1에 작용하는 힘 = PhysX 부호)로 추가됩니다. 같은 그래프·CSV를 씁니다.
+* *Redundant* — 중복 구속 처리(2.10 참고):
+  * `release`(기본): 종속 방정식을 수치적으로 찾아(랭크 판별) 루프 조인트부터 하나씩 해제하되 기구의 자유도는
+    유지합니다. Adams·MotionSolve·Simscape와 같은 방식이고, 그들과 달리 **해제한 방정식 목록을 요약에 표시**합니다.
+    합력은 정확, 중복 경로 사이 분담은 여러 해 중 하나입니다.
+  * `bushings`: 구동되지 않는 조인트를 강성 부싱(기본 1e8 N/m, 1e7 N·m/rad, 자유축 강성 0)으로 바꿉니다.
+    Adams·Altair가 비대칭 반력의 해법으로 권장하는 방식으로, 분담이 강성에 따라 물리적으로 정해집니다.
+
+**정확도 (오프라인 + Isaac Sim 6.1 Kit, 해석해와 비교)**
+
+| 케이스 | 정확해석기 | 기준 | 오차 |
+|---|---|---|---|
+| 수직 프리즘 10 kg 지지력 | 98.100 N | m·g | < 1e-6 |
+| 회전 링크 2 kg × 0.5 m, 0°/50°, 조인트 축 X/Y/Z, 베이스 회전 3종 | | m·g·L/2·cos θ | < 1e-6 N·m |
+| 시저 1·2·3단 한쪽, 35/45/60° 액추에이터 힘 | 예: 288.647 N | 가상일 288.647 N | < 1e-6 |
+| 시저 3단 양쪽 좌우 합 (`release`) | 1982.21 N | 1982.21 N | < 1e-6 |
+| 같은 모델 좌/우 분담 | `release` 217.6 / 1764.6 N, `bushings` 991.3 / 991.3 N | 대칭 구조 | bushings 합 +0.016 % (부싱 변형) |
+| 진자 주기(동적, generalized-α) | | 2π√(I/mgd) | < 0.2 % |
+
+PhysX와 달리 루프를 닫는 조인트의 반력도 나오고, 결과가 시간 간격과 무관합니다.
+
+### 2.10 과구속(중복 구속) 처리 — 상용 툴 비교 (공개 자료로 확인)
+과구속 해제 이론을 툴별로 정리한 비교표(외부 문서)를 공개 자료로 확인한 결과입니다. ✔ 확인,
+✘ 사실과 다름, ? 공개 자료로 확인하지 못함.
+
+| 툴 | 항목 | 판정 | 근거 |
+|---|---|---|---|
+| Adams 계열 | 중복 구속을 자동 검출해 제거, 대칭 구조에서도 반력이 비대칭으로 나올 수 있음, 해법은 부싱 | ✔ | [Solid Solutions](https://www.solidsolutions.co.uk/resolving-redundant-constraints-and-asymmetrical-results-in-motion-simulation/) |
+| Adams / Simscape | 어떤 구속을 제거했는지 사용자에게 알려주지 않음 | ✔ | [arXiv 2512.19289](https://arxiv.org/pdf/2512.19289) |
+| Adams | 적분기 GSTIFF / WSTIFF / SI2 계열 | ✔ | [SOLIDWORKS Motion 도움말](https://help.solidworks.com/2018/english/solidworks/motionstudies/c_integration_methods_analysis.htm) |
+| Adams | "부분 피벗 LU로 처리" | ? | 공개 문서에서 확인 못함 |
+| Altair Inspire / MotionSolve | 중복 방정식 제거, 제거된 자유도에는 반력 없음, 유연 조인트 권장 | ✔ | [Altair 도움말](https://help.altair.com/inspire/en_us/topics/inspire/motion/redundant_constraints_r.htm) |
+| Abaqus | 과구속 자동 제거(경고), 반력이 부정확할 수 있음 | ✔ | Abaqus Analysis User's Guide, Overconstraint checks |
+| RecurDyn | 상대좌표 순환 정식화, 컷 조인트 + 라그랑주 승수 | ✔ | [Bae·Haug 계열 논문](https://www.bohrium.com/paper-details/a-recursive-formulation-for-flexible-multibody-dynamics-part-ii-closed-loop-systems/812414973014704128-3776), [Solver Theoretical Manual](https://www.scribd.com/doc/78016413/Recurdyn-Solver-Theoretical-Manual) |
+| RecurDyn | 중복 구속 반력 분배 방식 | ? | 비공개 |
+| Simcenter Motion | BDF 적분 | ✔ | Siemens Simcenter 데이터시트 |
+| Simcenter Motion | 좌표 분할법(coordinate partitioning) | ? | Siemens 자료에서 확인 못함(일반 기법으로는 존재) |
+| Exudyn | 잉여(절대) 좌표 정식화 | ✔ (보완) | [Exudyn 문서](https://exudyn.readthedocs.io/) — 최소좌표 `KinematicTree`도 지원 |
+| Exudyn | 자유도·중복 구속 판별 | ✔ | `ComputeSystemDegreeOfFreedom`: numpy `matrix_rank` / SVD (소스 확인) |
+| Exudyn | "특이 자코비안은 SVD 최소노름 해" | ✘ | `ignoreSingularJacobian` 은 Eigen FullPivLU이고 문서가 "잘못된 결과가 나올 수 있다"고 경고 |
+| ODYN | MBD 소프트웨어 | ✘ | 다물체 동역학 툴이 아니라 **QP 솔버**(all-shifted NCP + proximal method of multipliers) — [arXiv 2602.16005](https://arxiv.org/abs/2602.16005) |
+| ODYN | "완화 가중치로 근사 반력 도출" | ✘ | elastic 변형의 쌍대변수는 접촉력으로서 물리적 해석이 어렵다고 보고됨 — [arXiv 2606.16564](https://arxiv.org/html/2606.16564) |
+
+이론 배경: 중복 구속이 있으면 강체 모델의 반력은 **유일하지 않습니다**. 어떤 반력 성분이 유일하게
+정해지는지는 [Wojtyra 2005](https://link.springer.com/article/10.1007/s11044-005-5967-0)가,
+정해지지 않는 성분을 고르는 실용 기준(가중 최소노름)은
+[García de Jalón & Gutiérrez-López 2013](https://link.springer.com/article/10.1007/s11044-013-9358-7)이
+다룹니다. 이 디자이너는 상용 툴 관례대로 `release`(해제 + 목록 표시)와 `bushings`(강성으로 분담)를
+제공합니다. 실제 분담이 중요하면 `bushings`에 실제 부품 강성을 넣으세요.
 
 ---
 
 ## 3. 스크립트에서 사용하기
 
-`core` 패키지는 `pxr`만 사용하므로 Script Editor, standalone Python, 오프라인 `usd-core` 어디서든 동작합니다.
+`core` 패키지는 `pxr`만 사용하므로 Script Editor, standalone Python, 오프라인 `usd-core` 어디서든 동작합니다
+(`core.mbd` 만 `exudyn` 추가 필요).
+
+```python
+from gomjb.physics_designer.core.mbd import MbdModel
+
+model = MbdModel(stage, "/World/ScissorLift", redundancy="release")   # 또는 "bushings"
+print(model.report())                     # 자유도, 드라이브, 해제한 중복 방정식
+rec = model.static_sweep(["Actuator_L", "Actuator_R"], [0.0, -0.1, -0.2])   # m (회전은 deg)
+rec.to_csv("lift_static.csv")
+```
 
 ```python
 import omni.usd
@@ -256,6 +332,7 @@ exts/gomjb.physics_designer/
 │   │   ├── modeling.py     # 모델러: 형상 바디, 해석적 질량 특성, Link 핀 앵커
 │   │   ├── mechanisms.py   # 파라메트릭 템플릿 + 시저 해석해
 │   │   ├── results.py      # 시계열 기록, CSV
+│   │   ├── mbd.py          # 정확해석기: USD → Exudyn 구속 모델, 정적·스윕·동적, 중복 구속 처리
 │   │   ├── validation.py   # 검사 + 자동 수정
 │   │   └── snapshot.py     # 경로 단위 Undo 스냅샷
 │   ├── ui/                 # omni.ui 창(+ modeler_section, analysis_section), 위젯, 라이브 스냅

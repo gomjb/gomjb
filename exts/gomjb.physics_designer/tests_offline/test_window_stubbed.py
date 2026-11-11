@@ -231,7 +231,7 @@ def test_analysis_plot_summary_and_csv(env, tmp_path):
                                 "force:Hinge": 2.0, "link_force:Platform:x": 3.0,
                                 "link_force:Platform:y": 0.0, "link_force:Platform:z": 4.0})
     rec.units["force:Actuator_L"] = "N"
-    win.analysis._recorder = type("FakeRecorder", (), {"recording": rec, "unavailable": [], "stop": lambda s: None})()
+    win.analysis._result = rec
     win.analysis._filter.model.set_value("Actuator")
     win.analysis.refresh_plot()
     plot = win.analysis._plot  # the plot is rebuilt on every refresh
@@ -257,3 +257,47 @@ def test_analysis_plot_summary_and_csv(env, tmp_path):
     win.analysis._csv.model.set_value(str(tmp_path / "out.csv"))
     click("Export CSV")
     assert (tmp_path / "out.csv").read_text(encoding="utf-8").startswith("time [s],pos:Actuator_L")
+
+
+def test_exact_solver_sweep_and_bushings(env, tmp_path):
+    import math
+
+    win, ctx, _ = env
+    from gomjb.physics_designer.core import mechanisms as me
+    from gomjb.physics_designer.core import physics as ph
+
+    UsdGeom.SetStageMetersPerUnit(ctx.stage, 1.0)
+    ph.ensure_physics_scene(ctx.stage)
+    res = me.build_scissor_lift(ctx.stage, stages=1, sides=1, angle=30.0)
+    a = win.analysis
+    a._root.model.set_value(res["root"][0])
+    targets = [me.scissor_slider_offset(1.2, 30.0, deg) for deg in (40.0, 50.0)]
+    a._sweep_from.value, a._sweep_to.value = targets
+    a._sweep_points.model.set_value(2)
+    a._filter.model.set_value("Actuator")
+    click("Sweep drive")
+    assert "Swept Actuator over 2 points" in status(win)
+    plot = a._plot
+    assert plot.legends == ["Actuator"] and a.recording.x_label == "Actuator [m]"
+    for deg, force in zip((40.0, 50.0), plot.y_data[0]):
+        assert -force == pytest.approx(me.scissor_actuator_force(1.2, deg, 1, 20.0, 5.0, sides=1), rel=1e-6)
+    assert "redundancy handling: release" in a._summary_model.as_string
+    a._csv.model.set_value(str(tmp_path / "sweep.csv"))
+    click("Export CSV")
+    assert (tmp_path / "sweep.csv").read_text(encoding="utf-8").startswith("Actuator [m],")
+
+    _combo(a._redundancy, "bushings")
+    click("Solve static")
+    assert "solved" in status(win) and "as stiff bushings" in a._summary_model.as_string
+    _combo(a._kind, "Joint reaction |F|")
+    a._filter.model.set_value("BaseFixed")
+    a.refresh_plot()
+    weight = sum(md_mass(ctx.stage, p) for p in res["bodies"]) * 9.81
+    assert a._plot.y_data[0][0] == pytest.approx(weight, rel=1e-4)
+    assert math.isfinite(a._plot.y_max)
+
+
+def md_mass(stage, path):
+    from gomjb.physics_designer.core import modeling as md
+
+    return md.body_mass_properties(stage.GetPrimAtPath(path)).mass

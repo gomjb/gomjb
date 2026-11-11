@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.4.0] - 2026-11-11
+### Added
+- Exact solver (`core.mbd`, Exudyn 1.13.6 through `[python.pipapi]`): the USD model as an exact
+  constraint system — loop-closing joints included, drives as prescribed motions whose
+  multipliers are the actuator forces. Static equilibrium, drive sweeps (several drives together)
+  and dynamic runs (generalized-alpha); full 6-axis reactions per joint. Matches the analytic
+  answers to < 1e-6 (prismatic, rotated revolute axes, 1–3 stage scissor lifts).
+- Redundant constraints: `release` (dependent equations released, loop joints first, mobility
+  kept, and listed — Adams / MotionSolve practice) or `bushings` (undriven joints as stiff
+  bushings, so the split over redundant load paths follows stiffness — the Adams / Altair fix).
+- Analysis section: Exact solver controls (redundancy, sweep drives / range / points, Solve static,
+  Sweep drive); exact results share the plot, summary and CSV.
+- README 2.10: redundancy handling across Adams, MotionSolve, Abaqus, RecurDyn, Simcenter, Exudyn and
+  ODYN, checked against public sources.
+
+### Changed
+- `Recording.x_label` names the abscissa (time, or the drive value of a sweep) in plots and CSV.
+- Analysis target field is "Mechanism".
+
 ## [0.3.0] - 2026-11-11
 ### Added
 - Modeler: box / cylinder / sphere / capsule / cone / link bodies with material density presets,

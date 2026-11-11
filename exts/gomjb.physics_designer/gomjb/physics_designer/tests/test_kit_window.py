@@ -96,3 +96,25 @@ class TestPhysicsDesignerWindow(omni.kit.test.AsyncTestCase):
         expected = 2 * me.scissor_actuator_force(1.2, theta, 2, 20.0, 5.0, sides=2)
         self.assertAlmostEqual(total / expected, 1.0, delta=0.02)
         self.assertIn("Actuator_L", analysis._summary_model.as_string)
+
+    async def test_exact_solver_sweep(self):
+        """The exact solver ([python.pipapi] exudyn) against the virtual-work answer."""
+        from ..commands import run_edit
+        from ..core import mechanisms as me
+        from ..core import physics as ph
+
+        res = run_edit(lambda s: (ph.ensure_physics_scene(s), me.build_scissor_lift(s, stages=2, angle=30.0))[-1])
+        analysis = self.window.analysis
+        analysis._root.model.set_value(res["root"][0])
+        analysis._filter.model.set_value("Actuator")
+        angles = (40.0, 55.0)
+        analysis._sweep_from.value, analysis._sweep_to.value = [me.scissor_slider_offset(1.2, 30.0, a) for a in angles]
+        analysis._sweep_points.model.set_value(2)
+        analysis.sweep()  # empty drive field: both actuators together
+        rec = analysis.recording
+        self.assertEqual(len(rec), 2, self.window._status_model.as_string)
+        self.assertIn("released redundant equations", analysis._summary_model.as_string)
+        for k, deg in enumerate(angles):
+            total = -(rec.channels["force:Actuator_L"][k] + rec.channels["force:Actuator_R"][k])
+            expected = 2 * me.scissor_actuator_force(1.2, deg, 2, 20.0, 5.0, sides=2)
+            self.assertAlmostEqual(total / expected, 1.0, delta=1e-6)
