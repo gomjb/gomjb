@@ -197,7 +197,8 @@ Isaac Sim 6.1 실측 (3단, 팔 1.2 m, 20°, 목표 핀 높이 2.2 m):
 
 ### 2.9 Exact solver (정확해석기, Exudyn)
 Analysis 섹션 아래쪽. PhysX 시뮬레이션(근사, 0.1–0.5 % 오차)과 별도로, 같은 USD 모델을 **구속 방정식
-기반 다물체 동역학**으로 풉니다. RecurDyn·Adams와 같은 방식입니다.
+기반 다물체 동역학**으로 풉니다. 절대좌표와 라그랑주 승수를 쓰는 방식입니다(RecurDyn은 상대좌표 순환
+정식화이고, 폐루프에서 라그랑주 승수를 씁니다 — 2.10).
 
 * 바디: RigidBodyAPI + MassAPI(질량·질량중심·주관성)를 그대로 사용 — 모델러가 만든 값.
   kinematic 바디와 바디가 아닌 조인트 대상은 ground.
@@ -211,8 +212,8 @@ Analysis 섹션 아래쪽. PhysX 시뮬레이션(근사, 0.1–0.5 % 오차)과 
   `joint_torque:...`(조인트 좌표계, body1에 작용하는 힘 = PhysX 부호)로 추가됩니다. 같은 그래프·CSV를 씁니다.
 * *Redundant* — 중복 구속 처리(2.10 참고):
   * `release`(기본): 종속 방정식을 수치적으로 찾아(랭크 판별) 루프 조인트부터 하나씩 해제하되 기구의 자유도는
-    유지합니다. Adams·MotionSolve·Simscape와 같은 방식이고, 그들과 달리 **해제한 방정식 목록을 요약에 표시**합니다.
-    합력은 정확, 중복 경로 사이 분담은 여러 해 중 하나입니다.
+    유지합니다. Adams·MotionSolve처럼 자동으로 해제하고, 해제 내역을 알려주지 않는 Adams·Simscape와 달리
+    **해제한 방정식 목록을 요약에 표시**합니다. 합력은 정확하고, 중복 경로 사이 분담은 여러 해 중 하나입니다.
   * `bushings`: 구동되지 않는 조인트를 강성 부싱(기본 1e8 N/m, 1e7 N·m/rad, 자유축 강성 0)으로 바꿉니다.
     Adams·Altair가 비대칭 반력의 해법으로 권장하는 방식으로, 분담이 강성에 따라 물리적으로 정해집니다.
 
@@ -229,37 +230,34 @@ Analysis 섹션 아래쪽. PhysX 시뮬레이션(근사, 0.1–0.5 % 오차)과 
 
 PhysX와 달리 루프를 닫는 조인트의 반력도 나오고, 결과가 시간 간격과 무관합니다.
 
-### 2.10 과구속(중복 구속) 처리 — 상용 툴 비교 (공개 자료로 확인)
-과구속 해제 이론을 툴별로 정리한 비교표(외부 문서)를 공개 자료로 확인한 결과입니다. ✔ 확인,
-✘ 사실과 다름, ? 공개 자료로 확인하지 못함.
+### 2.10 과구속(중복 구속) 처리 — 다물체 동역학 프로그램 비교
+공식 문서, 논문 원문, 소스 코드로 **확인된 내용만** 정리했습니다.
 
-| 툴 | 항목 | 판정 | 근거 |
-|---|---|---|---|
-| Adams 계열 | 중복 구속을 자동 검출해 제거, 대칭 구조에서도 반력이 비대칭으로 나올 수 있음, 해법은 부싱 | ✔ | [Solid Solutions](https://www.solidsolutions.co.uk/resolving-redundant-constraints-and-asymmetrical-results-in-motion-simulation/) |
-| Adams / Simscape | 어떤 구속을 제거했는지 사용자에게 알려주지 않음 | ✔ | [arXiv 2512.19289](https://arxiv.org/pdf/2512.19289) |
-| Adams | 적분기 GSTIFF / WSTIFF / SI2 계열 | ✔ | [SOLIDWORKS Motion 도움말](https://help.solidworks.com/2018/english/solidworks/motionstudies/c_integration_methods_analysis.htm) |
-| Adams | "부분 피벗 LU로 처리" | ? | 공개 문서에서 확인 못함 |
-| Altair Inspire / MotionSolve | 중복 방정식 제거, 제거된 자유도에는 반력 없음, 유연 조인트 권장 | ✔ | [Altair 도움말](https://help.altair.com/inspire/en_us/topics/inspire/motion/redundant_constraints_r.htm) |
-| Abaqus | 과구속 자동 제거(경고), 반력이 부정확할 수 있음 | ✔ | Abaqus Analysis User's Guide, Overconstraint checks |
-| RecurDyn | 상대좌표 순환 정식화, 컷 조인트 + 라그랑주 승수 | ✔ | [Bae·Haug 계열 논문](https://www.bohrium.com/paper-details/a-recursive-formulation-for-flexible-multibody-dynamics-part-ii-closed-loop-systems/812414973014704128-3776), [Solver Theoretical Manual](https://www.scribd.com/doc/78016413/Recurdyn-Solver-Theoretical-Manual) |
-| RecurDyn | 중복 구속 반력 분배 방식 | ? | 비공개 |
-| Simcenter Motion | BDF 적분 | ✔ | Siemens Simcenter 데이터시트 |
-| Simcenter Motion | 좌표 분할법(coordinate partitioning) | ? | Siemens 자료에서 확인 못함(일반 기법으로는 존재) |
-| Exudyn | 잉여(절대) 좌표 정식화 | ✔ (보완) | [Exudyn 문서](https://exudyn.readthedocs.io/) — 최소좌표 `KinematicTree`도 지원 |
-| Exudyn | 자유도·중복 구속 판별 | ✔ | `ComputeSystemDegreeOfFreedom`: numpy `matrix_rank` / SVD (소스 확인) |
-| Exudyn | "특이 자코비안은 SVD 최소노름 해" | ✘ | `ignoreSingularJacobian` 은 Eigen FullPivLU이고 문서가 "잘못된 결과가 나올 수 있다"고 경고 |
-| O-Dyn (아주대) | 비교표의 "ODYN" 열 내용 | ✘ (다른 프로그램) | 열에 적힌 Primal-Dual NCP/QP, all-shifted NCP, elastic relaxation, 로보틱스 MPC는 이름만 같은 **QP 솔버 ODYN**의 설명 — [arXiv 2602.16005](https://arxiv.org/abs/2602.16005). 그 솔버의 "완화로 근사 반력"도 쌍대변수의 물리적 해석이 어렵다고 보고됨 — [arXiv 2606.16564](https://arxiv.org/html/2606.16564) |
-| O-Dyn (아주대) | 프로그램 이름·과구속 처리 방식 | ? | 아주대 박태원 연구실(서종휘·정성필·전갑진·윤지원·황인경 등)이 논문으로 발표한 해석기. 확인한 논문에는 프로그램 이름이 적혀 있지 않아 O-Dyn과 같은 것인지, 과구속을 어떻게 처리하는지는 확인하지 못함 |
-| 아주대 자체 해석기 (논문 원문) | 정식화 | ✔ | 평면 강체 데카르트 좌표 (x, y, θ) + 대변형 보 ANCF, 라그랑주 승수를 쓴 가속도 수준 증강 행렬식(식 14), 4차 Runge-Kutta 적분, 조인트 반력 = 승수 λ, 슬라이딩 조인트는 non-generalized 좌표 — [Seo·Jung·Park·Chai, JSME Int. J. C 48(2), 2005](https://www.jstage.jst.go.jp/article/jsmec/48/2/48_2_224/_article). 같은 연구실의 ANCF 가선계 해석: [이진희·박태원 2012](https://www.dbpia.co.kr/journal/articleDetail?nodeId=NODE01790898) |
-| 아주대 박태원 연구실 (참고) | 과구속의 실무 처리 | ✔ | 위성 태양전지판(여유구속): 강체 모델은 반력을 신뢰할 수 없어 패널을 **유연체(CMS)**로 모델링하고, 강체 비교 모델은 회전조인트를 하나만 두어 여유구속을 제거(해석은 DADS) — [서종휘·박태원 외 2003](https://www.koreascience.kr/article/CFKO200333239349542.pdf). 같은 연구실이 참여한 자체 해석기로는 웹 기반 P-DYN(C++, 한국기계연구원 공동)이 있음 — [이재경·박태원 외 2003](https://www.koreascience.kr/article/CFKO200333239349493.pdf) |
+| 프로그램 | 확인된 내용 | 근거 |
+|---|---|---|
+| Adams 계열 | 중복 구속을 자동으로 검출해 제거합니다. 그래서 대칭 구조에서도 반력이 비대칭으로 나올 수 있고, 해법으로 부싱을 권장합니다 | [Solid Solutions](https://www.solidsolutions.co.uk/resolving-redundant-constraints-and-asymmetrical-results-in-motion-simulation/) |
+| Adams, Simscape | 어떤 구속을 제거했는지 사용자에게 알려주지 않습니다 | [arXiv 2512.19289](https://arxiv.org/pdf/2512.19289) |
+| SOLIDWORKS Motion (Adams 계열 솔버) | 적분기 GSTIFF / WSTIFF / SI2 | [SOLIDWORKS 도움말](https://help.solidworks.com/2018/english/solidworks/motionstudies/c_integration_methods_analysis.htm) |
+| Altair Inspire / MotionSolve | 중복 방정식을 제거하고, 제거된 자유도에는 반력이 없습니다. 유연 조인트를 권장합니다 | [Altair 도움말](https://help.altair.com/inspire/en_us/topics/inspire/motion/redundant_constraints_r.htm) |
+| Abaqus | 일관된 과구속은 가능하면 자동으로 제거하고 경고를 내며, 일관되지 않은 과구속은 오류로 처리합니다. 과구속은 부정확한 해나 수렴 실패를 일으킬 수 있고, 해가 나와도 반력이 부정확할 수 있습니다 | [Abaqus Overconstraint checks](https://abaqus-docs.mit.edu/2017/English/SIMACAECSTRefMap/simacst-c-overconstraintchecks.htm) |
+| RecurDyn | 상대좌표 순환 정식화를 쓰고, 폐루프는 컷 조인트와 라그랑주 승수로 닫습니다 | [Bae·Haug 계열 논문](https://www.bohrium.com/paper-details/a-recursive-formulation-for-flexible-multibody-dynamics-part-ii-closed-loop-systems/812414973014704128-3776), [Solver Theoretical Manual](https://www.scribd.com/doc/78016413/Recurdyn-Solver-Theoretical-Manual) |
+| Simcenter 3D Motion | 가변 스텝 BDF 적분을 씁니다(실시간 옵션은 고정 스텝 BDF) | [Siemens 지원 문서](https://support.sw.siemens.com/en-US/okba/KB000112713_EN_US/About-Simcenter-3D-Motion-Model-Export/index.html) |
+| Exudyn | 기본은 잉여(절대) 좌표 정식화이며, 최소좌표 `KinematicTree`도 지원합니다 | [Exudyn 문서](https://exudyn.readthedocs.io/) |
+| Exudyn | 자유도와 중복 구속은 `ComputeSystemDegreeOfFreedom`(numpy `matrix_rank` / SVD)으로 판별합니다. 특이 자코비안을 허용하는 `ignoreSingularJacobian`은 Eigen FullPivLU를 쓰며, 문서가 잘못된 결과가 나올 수 있다고 경고합니다 | Exudyn 1.13.6 소스 |
+| 아주대 박태원 연구실 자체 해석기 | 평면 강체는 데카르트 좌표 (x, y, θ), 대변형 보는 ANCF로 표현합니다. 라그랑주 승수를 쓴 가속도 수준 증강 행렬식(식 14)을 4차 Runge-Kutta로 적분하고, 조인트 반력은 승수 λ에서 구합니다. 슬라이딩 조인트는 non-generalized 좌표로 정식화합니다 | [Seo·Jung·Park·Chai, JSME Int. J. C 48(2), 2005](https://www.jstage.jst.go.jp/article/jsmec/48/2/48_2_224/_article) |
+| 아주대 박태원 연구실 | 여유구속이 있는 위성 태양전지판은 강체 모델로는 반력을 신뢰할 수 없어 패널을 **유연체(CMS)**로 모델링했습니다. 강체 비교 모델에서는 회전조인트를 하나만 두어 여유구속을 없앴습니다(해석은 DADS) | [서종휘·박태원 외 2003](https://www.koreascience.kr/article/CFKO200333239349542.pdf) |
 
 이론 배경: 중복 구속이 있으면 강체 모델의 반력은 **유일하지 않습니다**. 어떤 반력 성분이 유일하게
 정해지는지는 [Wojtyra 2005](https://link.springer.com/article/10.1007/s11044-005-5967-0)가,
 정해지지 않는 성분을 고르는 실용 기준(가중 최소노름)은
 [García de Jalón & Gutiérrez-López 2013](https://link.springer.com/article/10.1007/s11044-013-9358-7)이
-다룹니다. 이 디자이너는 상용 툴 관례대로 `release`(해제 + 목록 표시)와 `bushings`(강성으로 분담)를
-제공합니다. 실제 분담이 중요하면 `bushings`에 실제 부품 강성을 넣으세요. 위 아주대 연구처럼 부품 자체를
-유연체로 만드는 것이 더 정확한 방법이지만, 이 디자이너는 아직 강체만 다룹니다.
+다룹니다.
+
+이 디자이너에 반영한 것:
+* `release` — Adams·MotionSolve·Abaqus처럼 중복 구속을 자동으로 해제합니다. 해제 내역을 알려주지 않는
+  Adams·Simscape와 달리, 해제한 방정식 목록을 요약에 표시합니다. 해제된 방정식에는 반력이 없습니다(Altair와 같음).
+* `bushings` — Adams·Altair가 권장하는 대로 강성 부싱으로 분담을 구합니다. 실제 분담이 중요하면 실제 부품
+  강성을 넣으세요. 아주대 연구처럼 부품 자체를 유연체로 만드는 것이 더 정확하지만, 이 디자이너는 아직 강체만 다룹니다.
 
 ---
 

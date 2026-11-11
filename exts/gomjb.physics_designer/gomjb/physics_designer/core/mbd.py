@@ -1,9 +1,9 @@
 """Exact constraint-based multibody analysis of a designer model (Exudyn backend).
 
-The USD model is turned into a differential-algebraic system the way RecurDyn / Adams do it:
-rigid bodies with their explicit mass properties, every joint an exact constraint (Lagrange
-multipliers = joint reactions, loop-closing joints included), and every *driven* axis a
-prescribed motion ("motion" in RecurDyn) whose multiplier is the exact actuator force.
+The USD model is turned into a differential-algebraic system in absolute coordinates, as Adams
+does: rigid bodies with their explicit mass properties, every joint an exact constraint
+(Lagrange multipliers = joint reactions, loop-closing joints included), and every *driven* axis
+a prescribed motion ("motion" in RecurDyn) whose multiplier is the exact actuator force.
 
 * Bodies: prims with RigidBodyAPI (+ MassAPI mass / centerOfMass / diagonalInertia, as the
   Modeler authors them). Kinematic bodies and non-rigid joint targets are ground.
@@ -15,7 +15,7 @@ prescribed motion ("motion" in RecurDyn) whose multiplier is the exact actuator 
   lift sharing a platform) make the reactions non-unique (Wojtyra 2005; García de Jalón &
   Gutiérrez-López 2013). Two treatments, see :class:`MbdModel`: ``"release"`` detects them
   numerically and releases one equation at a time — loop-closing joints first — keeping the
-  mobility, like Adams / MotionSolve / Simscape, and unlike them reports what was released;
+  mobility, like Adams / MotionSolve, and unlike Adams / Simscape reports what was released;
   ``"bushings"`` replaces undriven joints by stiff bushings so the split follows stiffness.
 
 Inputs and outputs are SI (m, deg, N, N*m); the model itself runs in stage units.

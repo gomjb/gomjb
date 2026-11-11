@@ -12,11 +12,9 @@
   bushings, so the split over redundant load paths follows stiffness — the Adams / Altair fix).
 - Analysis section: Exact solver controls (redundancy, sweep drives / range / points, Solve static,
   Sweep drive); exact results share the plot, summary and CSV.
-- README 2.10: redundancy handling across Adams, MotionSolve, Abaqus, RecurDyn, Simcenter and Exudyn,
-  checked against public sources; the comparison's "ODYN" column describes a same-named QP solver,
-  not Ajou University's O-Dyn. The Ajou group's in-house formulation (planar Cartesian rigid bodies +
-  ANCF, Lagrange multipliers, RK4) is cited from the original papers; the program name and its
-  redundancy handling are not stated there.
+- README 2.10: redundancy handling in Adams, Simscape, MotionSolve, Abaqus, RecurDyn, Simcenter 3D
+  Motion, Exudyn and the Ajou University group's solver — only what official documentation,
+  original papers or source code confirm.
 
 ### Changed
 - `Recording.x_label` names the abscissa (time, or the drive value of a sweep) in plots and CSV.

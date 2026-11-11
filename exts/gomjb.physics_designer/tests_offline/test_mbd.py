@@ -155,6 +155,11 @@ def test_two_sided_scissor_total_and_redundancy_report(scene):
     total = -(v["force:Actuator_L"] + v["force:Actuator_R"])
     theta = math.degrees(math.asin(2.2 / 3.6))
     assert total == pytest.approx(2 * me.scissor_actuator_force(1.2, theta, 3, 20.0, 5.0, sides=2), rel=1e-6)
+    from gomjb.physics_designer.core.mbd import AXIS_NAMES
+
+    for joint, axis in model.released:  # released equations carry no reaction (as in MotionSolve)
+        a = AXIS_NAMES.index(axis)
+        assert v[f"{'joint_force' if a < 3 else 'joint_torque'}:{joint}:{'xyz'[a % 3]}"] == 0.0
 
 
 def test_bushings_give_a_symmetric_split_with_the_same_total(scene):
