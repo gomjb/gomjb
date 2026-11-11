@@ -248,15 +248,17 @@ PhysX와 달리 루프를 닫는 조인트의 반력도 나오고, 결과가 시
 | Exudyn | 잉여(절대) 좌표 정식화 | ✔ (보완) | [Exudyn 문서](https://exudyn.readthedocs.io/) — 최소좌표 `KinematicTree`도 지원 |
 | Exudyn | 자유도·중복 구속 판별 | ✔ | `ComputeSystemDegreeOfFreedom`: numpy `matrix_rank` / SVD (소스 확인) |
 | Exudyn | "특이 자코비안은 SVD 최소노름 해" | ✘ | `ignoreSingularJacobian` 은 Eigen FullPivLU이고 문서가 "잘못된 결과가 나올 수 있다"고 경고 |
-| ODYN | MBD 소프트웨어 | ✘ | 다물체 동역학 툴이 아니라 **QP 솔버**(all-shifted NCP + proximal method of multipliers) — [arXiv 2602.16005](https://arxiv.org/abs/2602.16005) |
-| ODYN | "완화 가중치로 근사 반력 도출" | ✘ | elastic 변형의 쌍대변수는 접촉력으로서 물리적 해석이 어렵다고 보고됨 — [arXiv 2606.16564](https://arxiv.org/html/2606.16564) |
+| O-Dyn (아주대) | 비교표의 "ODYN" 열 내용 | ✘ (다른 프로그램) | 열에 적힌 Primal-Dual NCP/QP, all-shifted NCP, elastic relaxation, 로보틱스 MPC는 이름만 같은 **QP 솔버 ODYN**의 설명 — [arXiv 2602.16005](https://arxiv.org/abs/2602.16005). 그 솔버의 "완화로 근사 반력"도 쌍대변수의 물리적 해석이 어렵다고 보고됨 — [arXiv 2606.16564](https://arxiv.org/html/2606.16564) |
+| O-Dyn (아주대) | 정식화·과구속 처리 방식 | ? | 아주대에서 개발한 해석기로 주로 논문으로만 공개되어 있으나, "O-Dyn" 이름으로는 공개 자료를 찾지 못함 |
+| 아주대 박태원 연구실 (참고) | 과구속의 실무 처리 | ✔ | 위성 태양전지판(여유구속): 강체 모델은 반력을 신뢰할 수 없어 패널을 **유연체(CMS)**로 모델링하고, 강체 비교 모델은 회전조인트를 하나만 두어 여유구속을 제거(해석은 DADS) — [서종휘·박태원 외 2003](https://www.koreascience.kr/article/CFKO200333239349542.pdf). 같은 연구실이 참여한 자체 해석기로는 웹 기반 P-DYN(C++, 한국기계연구원 공동)이 있음 — [이재경·박태원 외 2003](https://www.koreascience.kr/article/CFKO200333239349493.pdf) |
 
 이론 배경: 중복 구속이 있으면 강체 모델의 반력은 **유일하지 않습니다**. 어떤 반력 성분이 유일하게
 정해지는지는 [Wojtyra 2005](https://link.springer.com/article/10.1007/s11044-005-5967-0)가,
 정해지지 않는 성분을 고르는 실용 기준(가중 최소노름)은
 [García de Jalón & Gutiérrez-López 2013](https://link.springer.com/article/10.1007/s11044-013-9358-7)이
 다룹니다. 이 디자이너는 상용 툴 관례대로 `release`(해제 + 목록 표시)와 `bushings`(강성으로 분담)를
-제공합니다. 실제 분담이 중요하면 `bushings`에 실제 부품 강성을 넣으세요.
+제공합니다. 실제 분담이 중요하면 `bushings`에 실제 부품 강성을 넣으세요. 위 아주대 연구처럼 부품 자체를
+유연체로 만드는 것이 더 정확한 방법이지만, 이 디자이너는 아직 강체만 다룹니다.
 
 ---
 
