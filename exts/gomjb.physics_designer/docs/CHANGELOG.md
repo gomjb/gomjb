@@ -14,7 +14,9 @@
   Sweep drive); exact results share the plot, summary and CSV.
 - README 2.10: redundancy handling across Adams, MotionSolve, Abaqus, RecurDyn, Simcenter and Exudyn,
   checked against public sources; the comparison's "ODYN" column describes a same-named QP solver,
-  not Ajou University's O-Dyn, whose papers are listed as not yet checked.
+  not Ajou University's O-Dyn. The Ajou group's in-house formulation (planar Cartesian rigid bodies +
+  ANCF, Lagrange multipliers, RK4) is cited from the original papers; the program name and its
+  redundancy handling are not stated there.
 
 ### Changed
 - `Recording.x_label` names the abscissa (time, or the drive value of a sweep) in plots and CSV.
