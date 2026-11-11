@@ -9,12 +9,15 @@ from pxr import Gf, Usd, UsdPhysics
 
 from ..core import joint_builder as jb
 from ..core import joints as jt
+from ..core import motion as mo
 from ..core import snapping as sn
 from ..core import transform as tf
 from ..core import units as un
-from .widgets import BoolInput, ComboInput, button_row, hint, section
+from .widgets import BoolInput, ComboInput, FloatInput, StringInput, button_row, hint, section
 
 PARENTS = ["<root>/Joints", "base body", "action body"]
+MOTION_LABELS = {"Displacement (time)": "displacement", "Velocity (time)": "velocity",
+                 "Acceleration (time)": "acceleration"}
 _SELECTED = {"Button:selected": {"background_color": 0xFF7A5A2A}}
 
 
@@ -77,6 +80,18 @@ class JointSection:
                 self._collide = BoolInput("Collide bodies", False)
                 self._excl = BoolInput("Exclude from artic.", False, "A loop-closing joint of an articulation")
                 self._parent = ComboInput("Joint prim under", PARENTS)
+                ui.Separator(height=6)
+                hint("Motion of the selected revolute / translational joints (RecurDyn 'Include Motion'): the "
+                     "joint's relative displacement follows an expression of TIME - deg for revolute joints, "
+                     "the unit system's length for translational ones. STEP(TIME, 0, 0, 1, 90) goes 0 -> 90 in "
+                     "1 s. Functions: STEP SIN COS TAN ASIN ACOS ATAN ATAN2 ABS SQRT EXP LOG MIN MAX SIGN MOD, PI.")
+                self._motion_on = BoolInput("Include Motion", True, "Unchecked: Apply removes the motion")
+                self._motion_type = ComboInput("Motion", list(MOTION_LABELS))
+                self._motion_expr = StringInput("Expression", "STEP(TIME, 0, 0, 1, 90)")
+                self._motion_x0 = FloatInput("Initial displacement", 0.0, "Velocity and acceleration motions")
+                self._motion_v0 = FloatInput("Initial velocity", 0.0, "Acceleration motions")
+                button_row([("Load motion", self.load_motion, "From the selected joint"),
+                            ("Apply motion", self.apply_motion, "To the selected joints")])
                 ui.Separator(height=6)
                 button_row([("Realign selected joints", self.realign_selected,
                              "Move the action-side frame back onto the base-side frame")])
@@ -211,6 +226,43 @@ class JointSection:
                                       self._maxf.core(stage) or None, self._target.core(stage),
                                       self._tvel.core(stage))
         return spec
+
+    # -- motion -------------------------------------------------------------------------
+    def apply_motion(self) -> None:
+        include = self._motion_on.value
+        motion = mo.Motion(MOTION_LABELS[self._motion_type.value], self._motion_expr.value.strip(),
+                           self._w.units.system.name, self._motion_x0.value, self._motion_v0.value)
+
+        def op(stage, prims):
+            joints = [p for p in prims if p.IsA(UsdPhysics.Joint)]
+            if not joints:
+                raise ValueError("select revolute / translational joints")
+            for j in joints:
+                if include:
+                    mo.set_motion(j, motion)
+                else:
+                    mo.clear_motion(j)
+
+        self._w._run("Apply motion" if include else "Remove motion", op, min_sel=1)
+
+    def load_motion(self) -> None:
+        joint = next((p for p in self._w._selection() if p.IsA(UsdPhysics.Joint)), None)
+        if joint is None:
+            self._w._status("Motion: select a joint.", error=True)
+            return
+        motion = mo.get_motion(joint)
+        self._motion_on.model.set_value(motion is not None)
+        if motion is None:
+            self._w._status(f"{joint.GetName()} has no motion.")
+            return
+        labels = list(MOTION_LABELS)
+        self._motion_type.widget.model.get_item_value_model().set_value(
+            labels.index(next(k for k, v in MOTION_LABELS.items() if v == motion.type)))
+        self._motion_expr.model.set_value(motion.expression)
+        self._motion_x0.value, self._motion_v0.value = motion.initial_displacement, motion.initial_velocity
+        note = "" if motion.units == self._w.units.system.name else \
+            f" Its lengths are in {motion.units}: switch the unit system to {motion.units} to edit it."
+        self._w._status(f"Loaded the motion of {joint.GetName()}.{note}")
 
     def realign_selected(self) -> None:
         def op(stage, prims):

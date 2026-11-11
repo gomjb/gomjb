@@ -74,6 +74,9 @@ class AnalysisSection:
                 self._sweep_points = IntInput("Points", 11, min_value=2)
                 self._on_units()
                 button_row([("Solve static", self.solve_static), ("Sweep drive", self.sweep)])
+                self._end_time = FloatInput("End time [s]", 2.0, "Dynamic analysis length", step=0.1)
+                button_row([("Simulate", self.simulate,
+                             "Dynamic analysis (generalized-alpha): joints with a motion follow it")])
                 self._kind = ComboInput("Plot", PLOTS, on_changed=lambda v: self.refresh_plot())
                 self._filter = StringInput("Name filter", "", "Only channels containing this text, e.g. Actuator")
                 ui.StringField(model=self._summary_model, multiline=True, read_only=True, height=90)
@@ -136,21 +139,21 @@ class AnalysisSection:
         return self._result
 
     # -- exact solver --------------------------------------------------------------------
-    def _model(self):
+    def _model(self, static: bool):
         path = self._mechanism()
         if path is None:
             return None
         from ..core.mbd import MbdModel  # needs exudyn ([python.pipapi])
 
         model = MbdModel(self._w._stage(), path, redundancy=self._redundancy.value)
-        if model.redundancy == "release" and model.dof > 0:
+        if static and model.redundancy == "release" and model.dof > 0:
             raise ValueError(f"{model.dof} free DOF with the drives locked - static equilibrium needs "
                              "a drive (stiffness > 0) on every free axis")
         return model
 
-    def _solve(self, fn) -> None:
+    def _solve(self, fn, static: bool = True) -> None:
         try:
-            model = self._model()
+            model = self._model(static)
             if model is None:
                 return
             rec, msg = fn(model)
@@ -161,6 +164,20 @@ class AnalysisSection:
         self._result, self._report = rec, model.report()
         self.refresh_plot()
         self._w._status(msg)
+
+    def simulate(self):
+        """Dynamic analysis to End time; joints with a motion follow it, other drives hold."""
+        end = self._end_time.value
+        if end <= 0:
+            self._w._status("Exact solver: End time must be > 0.", error=True)
+            return
+
+        def run(model):
+            n = len(model.motion_profiles())
+            rec = model.simulate(end, step=min(1e-3, end / 100), sample=end / 200)
+            return rec, f"Simulated {end:g} s, {n} motion(s)."
+
+        self._solve(run, static=False)
 
     def solve_static(self):
         self._solve(lambda model: (model.static_solution(), f"Static equilibrium of {model.root_path} solved."))

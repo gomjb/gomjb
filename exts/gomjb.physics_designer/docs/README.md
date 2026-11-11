@@ -138,6 +138,25 @@ xformOp 정밀도는 유지됩니다. 자식과 부모를 함께 선택하면 �
 * 아래 Properties(리밋, 드라이브, Break force/torque, 충돌, articulation 제외, 조인트 prim 위치)는 다음에 만들 조인트에
   적용됩니다. 리밋·드라이브 단위는 종류를 따릅니다(revolute: deg, translational: 길이).
 
+**Motion (RecurDyn의 Include Motion)** — 조인트를 선택하고 *Include Motion*, 종류, 식을 넣은 뒤 *Apply motion*.
+
+| Motion | 식의 의미 | 추가 입력 |
+|---|---|---|
+| Displacement (time) | 조인트 변위 x(t) | — |
+| Velocity (time) | 속도 v(t) (적분해서 변위) | Initial displacement |
+| Acceleration (time) | 가속도 a(t) (두 번 적분) | Initial displacement, Initial velocity |
+
+* 단위: revolute는 **deg** (deg/s, deg/s²), translational은 선택한 단위계의 길이(mm 등). 식을 쓴 단위계가 모션과 함께
+  저장됩니다. (RecurDyn의 회전 모션 식은 radian 기준이지만, 이 디자이너는 모든 각도가 deg입니다.)
+* 식: `TIME`, `PI`, 사칙연산·거듭제곱과 `STEP(x, x0, h0, x1, h1)`(3차 스텝, RecurDyn·Adams와 같음),
+  `SIN COS TAN ASIN ACOS ATAN ATAN2 ABS SQRT EXP LOG MIN MAX SIGN MOD` (삼각함수는 radian, 대소문자 무관).
+  예: `STEP(TIME, 0, 0, 1, 90)` = 1초 동안 0 → 90, `30*SIN(2*PI*TIME)`. 이 밖의 이름·코드는 거부됩니다.
+* 모션은 조인트 prim(`designer:motion:*`)에 저장되어 모델과 함께 다닙니다. 드라이브가 없는 조인트에는 추종용 강성 드라이브
+  (1e4 N·m/deg, 1e7 N/m)가 함께 붙고, 모션을 지우면 그 드라이브도 지워집니다. *Load motion* 으로 다시 불러와 고칠 수 있습니다.
+* **PhysX 시뮬레이션**: Play 중 매 물리 스텝 직전에 드라이브 목표(위치·속도)를 모션 값으로 갱신, Stop 하면 TIME = 0 값으로
+  돌아갑니다(실측: 0 → 45° STEP에서 중간·최종 각도 일치). Newton은 실행 중 USD 변경을 읽지 않아 모션이 적용되지 않습니다.
+* **정확해석기**: Analysis의 *Simulate* 가 모션을 정확한 위치 지정 구동으로 풉니다(아래 2.9).
+
 조인트 프레임은 **하나의 월드 프레임에서 body0/body1의 `localPos/localRot`를 동시에 계산**하므로
 (스케일·부모 회전 포함) 시뮬레이션 시작 시 물체가 튀는 현상이 없습니다.
 조인트 생성 후 body를 옮겼다면 조인트를 선택하고 *Realign selected joints* 를 누르세요.
@@ -245,6 +264,8 @@ Analysis 섹션 아래쪽. PhysX 시뮬레이션(근사, 0.1–0.5 % 오차)과 
   액추에이터 힘입니다. damping만 있는 드라이브와 조인트 리밋은 해석에 들어가지 않습니다(요약에 표시).
 * *Solve static*: 현재 드라이브 목표에서의 정적 평형. *Sweep drive*: 드라이브를 *From*→*To* 로 움직이며 각
   점에서 정적 평형(x축 = 드라이브 값). *Sweep drives* 를 비우면 모든 드라이브를 함께 움직입니다(양쪽 리프트).
+* *Simulate*: *End time* 까지 동적 해석(generalized-α). 모션이 있는 조인트는 모션을 따르고, 나머지 드라이브는 목표를
+  유지합니다(실측: 0 → 60° STEP 후 각도 오차 < 1e-6°, 정지 토크 = m·g·L/2·cos θ ± 0.1 %).
 * 결과 채널은 기록과 같고(`pos:`, `force:`) 조인트별 6축 반력이 `joint_force:<joint>:x/y/z`,
   `joint_torque:...`(조인트 좌표계, body1에 작용하는 힘 = PhysX 부호)로 추가됩니다. 같은 그래프·CSV를 씁니다.
 * *Redundant* — 중복 구속 처리(2.10 참고):

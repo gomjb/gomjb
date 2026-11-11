@@ -34,6 +34,7 @@ from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
 from . import joints as jt
 from . import math_utils as mu
+from . import motion as mo
 from . import transform as tf
 from .results import Recording
 from .stage_utils import si_factors
@@ -290,11 +291,23 @@ class MbdModel:
             rec.add_sample(v, self.values())
         return rec
 
-    def simulate(self, end_time: float, profiles: Dict[str, Callable[[float], float]], step: float = 1e-3,
-                 sample: float = 1.0 / 60.0) -> Recording:
-        """Dynamic analysis (implicit generalized-alpha, index 3) with drive profiles f(t) [m or deg]."""
+    def motion_profiles(self) -> Dict[str, Callable[[float], float]]:
+        """Joint name -> displacement f(t) [m or deg] of every driven joint that carries a motion."""
+        out = {}
+        for name, mj in self.joints.items():
+            motion = mo.get_motion(self.stage.GetPrimAtPath(mj.path))
+            if motion is not None and mj.drives:
+                out[name] = mo.Profile(motion, next(iter(mj.drives)) < 3).value
+        return out
+
+    def simulate(self, end_time: float, profiles: Optional[Dict[str, Callable[[float], float]]] = None,
+                 step: float = 1e-3, sample: float = 1.0 / 60.0) -> Recording:
+        """Dynamic analysis (implicit generalized-alpha, index 3). Driven joints follow ``profiles``
+        f(t) [m or deg], by default the joints' motions (RecurDyn "Include Motion"); other drives
+        hold their targets."""
         exu = self._exu
         mbs = self.mbs
+        profiles = self.motion_profiles() if profiles is None else profiles
         for name in profiles:
             mj = self.joints[name]
             axis = next(iter(mj.drives))

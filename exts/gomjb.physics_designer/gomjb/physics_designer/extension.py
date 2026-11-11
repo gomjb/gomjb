@@ -24,6 +24,9 @@ class PhysicsDesignerExtension(omni.ext.IExt):
         _instance = self
         self._window = None
         commands.register()
+        from .motion_runtime import MotionRuntime  # Isaac Sim runtime
+
+        self._motions = MotionRuntime()
         self._menu_items = [MenuItemDescription(name="Physics Designer", onclick_fn=self.toggle_window)]
         add_menu_items(self._menu_items, MENU_PATH)
         ui.Workspace.set_show_window_fn("Physics Designer", lambda visible: self._show(visible))
@@ -47,5 +50,6 @@ class PhysicsDesignerExtension(omni.ext.IExt):
         if self._window is not None:
             self._window.destroy()
             self._window = None
+        self._motions.destroy()
         commands.unregister()
         _instance = None

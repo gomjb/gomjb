@@ -57,6 +57,50 @@ class TestPhysicsDesignerWindow(omni.kit.test.AsyncTestCase):
         omni.kit.undo.undo()
         self.assertFalse([p for p in self.stage.Traverse() if p.IsA(UsdPhysics.RevoluteJoint)])
 
+    async def test_motion_drives_the_physx_simulation(self):
+        """A revolute joint with a STEP motion 0 -> 45 deg in 0.5 s: PhysX follows it (motion runtime)."""
+        import omni.timeline
+
+        from ..commands import run_edit
+        from ..core import joints as jt
+        from ..core import modeling as md
+        from ..core import motion as mo
+        from ..core import physics as ph
+        from ..core import transform as tf
+
+        def build(stage):
+            ph.ensure_physics_scene(stage)
+            root = UsdGeom.Xform.Define(stage, "/World/Arm").GetPrim()
+            ph.apply_articulation_root(root)
+            base = md.create_body(stage, "/World/Arm/Base", "box", (0.2, 0.2, 0.2), mass=5.0)
+            tf.set_world_position(base, (0, 0, 1))
+            jt.create_joint(stage, jt.JointSpec("fixed", name="BaseFixed"), None, base, (0, 0, 1),
+                            parent_path="/World/Arm/Joints")
+            link = md.create_body(stage, "/World/Arm/Link", "link", (1.0, 0.05, 0.02), mass=2.0)
+            tf.set_world_position(link, (0.5, -0.15, 1))
+            hinge = jt.create_joint_at(stage, jt.JointSpec("revolute", name="Hinge", axis="Z"), base, link,
+                                       location="custom", custom_position=(0, -0.15, 1), world_axis="Y",
+                                       parent_path="/World/Arm/Joints")
+            mo.set_motion(hinge, mo.Motion("displacement", "STEP(TIME, 0, 0, 0.5, 45)"))
+
+        run_edit(build)
+        analysis = self.window.analysis
+        analysis._root.model.set_value("/World/Arm")
+        analysis.start()
+        timeline = omni.timeline.get_timeline_interface()
+        timeline.play()
+        for _ in range(150):
+            await omni.kit.app.get_app().next_update_async()
+        timeline.stop()
+        analysis.stop()
+        rec = analysis.recording
+        self.assertGreater(rec.time[-1], 1.0)
+        self.assertAlmostEqual(abs(rec.at(rec.time[-1], "pos:Hinge")), 45.0, delta=0.5)
+        self.assertAlmostEqual(abs(rec.at(0.25, "pos:Hinge")), 22.5, delta=2.0)  # mid-STEP
+        await omni.kit.app.get_app().next_update_async()
+        hinge = self.stage.GetPrimAtPath("/World/Arm/Joints/Hinge")
+        self.assertAlmostEqual(UsdPhysics.DriveAPI(hinge, "angular").GetTargetPositionAttr().Get(), 0.0)  # Stop
+
     async def test_every_template_builds_and_validates(self):
         for i, name in enumerate(self.window._tpl.items):
             self.window._tpl.widget.model.get_item_value_model().set_value(i)

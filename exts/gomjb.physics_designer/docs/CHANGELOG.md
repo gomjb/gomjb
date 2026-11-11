@@ -14,6 +14,14 @@
 ### Added
 - Viewport picking (`ui.viewport_pick`): a click gesture over the viewport and
   `viewport_api.request_query` for the clicked prim and surface point (Kit's own picking pattern).
+- Joint motions, RecurDyn's "Include Motion" (`core.motion`): displacement, velocity or
+  acceleration of a revolute (deg) or translational joint as an expression of TIME
+  (`core.expressions`: STEP, SIN, ... in a whitelisted language), stored on the joint prim with
+  the unit system it was written in. Joints without a drive get a stiff tracking drive.
+- Motions in the PhysX simulation (`motion_runtime`): drive targets set before every physics step
+  from Play, back to TIME = 0 on Stop.
+- Exact solver *Simulate* (dynamic analysis to an end time): joints with a motion follow it
+  exactly (`MbdModel.simulate` uses the motions by default).
 
 ## [0.5.0] - 2026-11-11
 ### Added

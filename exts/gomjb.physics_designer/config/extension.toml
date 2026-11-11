@@ -16,7 +16,8 @@ changelog = "docs/CHANGELOG.md"
 "omni.kit.menu.utils" = {}
 "isaacsim.gui.components" = {}                 # XYPlot
 "isaacsim.core.experimental.prims" = {}        # Articulation (analysis recorder)
-"isaacsim.core.simulation_manager" = {}        # physics step callbacks
+"isaacsim.core.simulation_manager" = {}        # physics step callbacks (recording, motions)
+"omni.timeline" = {}                           # motions: back to TIME = 0 on Stop
 "omni.kit.viewport.utility" = {}               # joint picking: the active viewport
 "omni.ui.scene" = {}                           # joint picking: click gesture over the viewport
 

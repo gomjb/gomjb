@@ -52,7 +52,8 @@ def test_every_button_runs_without_crashing(env):
             w.kwargs["clicked_fn"]()
             assert "failed" not in status(win) or any(
                 k in status(win) for k in ("select two anchors", "select joint prims", "no snap point",
-                                           "select bodies created by the modeler")
+                                           "select bodies created by the modeler",
+                                           "select revolute / translational joints")
             ), f"{w.args[0]}: {status(win)}"
 
 
@@ -96,6 +97,54 @@ def test_recurdyn_joint_base_action_point(env):
     assert j.picker is None and "Created" in j._prompt_model.as_string
     commands.undo()
     assert not ctx.stage.GetPrimAtPath(joint_path)
+
+
+def test_motion_apply_load_remove_and_simulate(env):
+    """Include Motion on a joint from the window, then the exact solver's dynamic run follows it."""
+    pytest.importorskip("exudyn")
+    import math
+
+    win, ctx, commands = env
+    from gomjb.physics_designer.core import joints as jt
+    from gomjb.physics_designer.core import modeling as md
+    from gomjb.physics_designer.core import motion as mo
+    from gomjb.physics_designer.core import physics as ph
+    from gomjb.physics_designer.core import transform as tf
+
+    stage = ctx.stage
+    ph.ensure_physics_scene(stage)
+    root = UsdGeom.Xform.Define(stage, "/World/Arm").GetPrim()
+    ph.apply_articulation_root(root)
+    link = md.create_body(stage, "/World/Arm/Link", "link", (1.0, 0.05, 0.02), mass=2.0)
+    tf.set_world_position(link, (0.5, 0, 0))
+    joint = jt.create_joint_at(stage, jt.JointSpec("revolute", name="Hinge", axis="Z"), None, link,
+                               location="custom", custom_position=(0, 0, 0), world_axis="Y",
+                               parent_path="/World/Arm/Joints")
+    j = win.joints
+    _combo(j._motion_type, "Displacement (time)")
+    j._motion_expr.model.set_value("STEP(TIME, 0, 0, 0.5, 45)")
+    select(ctx, str(joint.GetPath()))
+    click("Apply motion")
+    assert mo.get_motion(joint).expression == "STEP(TIME, 0, 0, 0.5, 45)", status(win)
+    j._motion_expr.model.set_value("")
+    click("Load motion")
+    assert j._motion_expr.value == "STEP(TIME, 0, 0, 0.5, 45)" and j._motion_on.value
+
+    a = win.analysis
+    a._root.model.set_value("/World/Arm")
+    a._end_time.value = 1.0
+    a._filter.model.set_value("Hinge")
+    click("Simulate")
+    assert "Simulated 1 s, 1 motion(s)." in status(win), status(win)
+    rec = a.recording
+    assert rec.x_name == "time" and abs(rec.channels["pos:Hinge"][-1]) == pytest.approx(45.0, abs=1e-6)
+    assert abs(rec.channels["force:Hinge"][-1]) == pytest.approx(2 * 9.81 * 0.5 * math.cos(math.radians(45)),
+                                                                  rel=1e-3)
+    j._motion_on.model.set_value(False)
+    click("Apply motion")
+    assert mo.get_motion(joint) is None
+    commands.undo()
+    assert mo.get_motion(joint) is not None  # undo brings the motion back
 
 
 def test_recurdyn_translational_with_direction_and_ground(env):

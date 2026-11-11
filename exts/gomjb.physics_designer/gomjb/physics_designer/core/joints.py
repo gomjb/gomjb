@@ -69,7 +69,8 @@ def _from_si(stage: Usd.Stage, value: Optional[float], quantity: str) -> Optiona
     return None if value is None else value / un.si_per_stage_unit(stage, quantity)
 
 
-def _drive_from_si(stage: Usd.Stage, drive: DriveSpec, linear: bool) -> DriveSpec:
+def drive_from_si(stage: Usd.Stage, drive: DriveSpec, linear: bool) -> DriveSpec:
+    """Copy of a drive written in SI (N/m or N*m/deg, ...; targets in m or deg) in stage units."""
     def q(lin: str, ang: str) -> str:
         return lin if linear else ang
 
@@ -89,7 +90,7 @@ def spec_from_si(spec: JointSpec, stage: Usd.Stage) -> JointSpec:
     return replace(
         spec,
         lower=_from_si(stage, spec.lower, limit), upper=_from_si(stage, spec.upper, limit),
-        drive=_drive_from_si(stage, spec.drive, linear) if spec.drive else None,
+        drive=drive_from_si(stage, spec.drive, linear) if spec.drive else None,
         break_force=_from_si(stage, spec.break_force, "force"),
         break_torque=_from_si(stage, spec.break_torque, "torque"),
         min_distance=_from_si(stage, spec.min_distance, "length"),
@@ -97,7 +98,7 @@ def spec_from_si(spec: JointSpec, stage: Usd.Stage) -> JointSpec:
         d6={dof: lim if isinstance(lim, str) else tuple(
             _from_si(stage, v, "length" if dof.startswith("trans") else "angle") for v in lim)
             for dof, lim in spec.d6.items()},
-        d6_drives={dof: _drive_from_si(stage, d, dof.startswith("trans")) for dof, d in spec.d6_drives.items()})
+        d6_drives={dof: drive_from_si(stage, d, dof.startswith("trans")) for dof, d in spec.d6_drives.items()})
 
 
 # ---------------------------------------------------------------------------------------
