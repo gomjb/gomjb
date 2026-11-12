@@ -12,7 +12,7 @@ prescribed by an expression of TIME, as a displacement, velocity or acceleration
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, Optional, Tuple
+from typing import Callable, Dict, Optional, Tuple
 
 from pxr import Sdf, Usd, UsdPhysics
 
@@ -153,10 +153,14 @@ def apply_targets(joint: Usd.Prim, profile: Profile, t: float) -> None:
     api.CreateTargetVelocityAttr().Set(float(profile.velocity(t) * scale))
 
 
-def profiles(stage: Usd.Stage) -> Dict[str, Profile]:
-    """Joint path -> profile for every joint with a motion."""
+def profiles(stage: Usd.Stage, skip: Optional[Callable[[Usd.Prim], bool]] = None) -> Dict[str, Profile]:
+    """Joint path -> profile for every joint with a motion, not looking inside prims ``skip`` accepts."""
     out = {}
-    for prim in stage.Traverse():
+    it = iter(Usd.PrimRange.Stage(stage))
+    for prim in it:
+        if skip is not None and skip(prim):
+            it.PruneChildren()
+            continue
         if prim.IsA(UsdPhysics.Joint):
             motion = get_motion(prim)
             if motion is not None:

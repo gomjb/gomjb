@@ -12,7 +12,9 @@ Two sources of the body frames, the mechanism's mode:
   actuators of a lift), and its range is their joint limits; values beyond it are clamped.
   The stroke points are refined where the kinematics bends until interpolating between them
   is within a tolerance (:func:`build_table`) — near a singular pose (a scissor folding flat)
-  the bodies move fast for little stroke, and an even spacing would be far off there.
+  the bodies move fast for little stroke, and an even spacing would be far off there. Tables are
+  kept on disk under the mechanism's kinematic identity (:func:`cached_table`), so a model is
+  tabulated once and every later run — another process too — reads it.
 * :class:`CoSimulation` (``"cosim"``) — the position analysis at the drive values of every
   physics step: exact at any drive values and for any number of independent motions, one CPU
   solve per step.
@@ -23,12 +25,15 @@ targets. Frames are root-local (relative to the mechanism root's rigid frame) in
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import math
-from dataclasses import astuple, dataclass
+import os
+from dataclasses import asdict, astuple, dataclass
 from typing import List, Tuple
 
 import numpy as np
-from pxr import Gf, Usd, UsdPhysics
+from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
 from . import kinematic_mode as km
 from . import math_utils as mu
@@ -197,6 +202,46 @@ def build_table(model: MbdModel, tolerance: float = km.TABLE_TOLERANCE) -> Motio
         worst = (max(worst[0], missed[0]), max(worst[1], missed[1]))
     return MotionTable(drives, motion, linear, np.array([p[0] for p in points]), frames.bodies,
                        np.array([p[1] for p in points]), worst, float(tolerance))
+
+
+TABLE_FORMAT = 1  # raise when build_table or the saved layout changes: older cached tables are not used
+
+
+def table_key(stage: Usd.Stage, fingerprint: str) -> str:
+    """Cache key of a mechanism's motion table: its kinematic identity
+    (:func:`kinematic_mode.fingerprint`), the stage's scale (frames are in stage units) and the
+    table format."""
+    mpu = float(UsdGeom.GetStageMetersPerUnit(stage) or 1.0)
+    return hashlib.sha1(f"{fingerprint}:{mpu!r}:{TABLE_FORMAT}".encode()).hexdigest()
+
+
+def save_table(table: MotionTable, path: str) -> None:
+    """Write ``table`` (.npz); atomically, so a process reading the cache never sees half a file."""
+    tmp = f"{path}.{os.getpid()}.tmp"
+    with open(tmp, "wb") as f:
+        np.savez(f, drives=np.array(table.drives), motion=np.array(json.dumps(asdict(table.motion))),
+                 linear=table.linear, stroke=table.stroke, bodies=np.array(table.bodies), frames=table.frames,
+                 error=np.array(table.error), tolerance=table.tolerance)
+    os.replace(tmp, path)
+
+
+def load_table(path: str) -> MotionTable:
+    with np.load(path, allow_pickle=False) as d:
+        return MotionTable([str(s) for s in d["drives"]], mo.Motion(**json.loads(str(d["motion"]))),
+                           bool(d["linear"]), d["stroke"], [str(s) for s in d["bodies"]], d["frames"],
+                           (float(d["error"][0]), float(d["error"][1])), float(d["tolerance"]))
+
+
+def cached_table(stage: Usd.Stage, root_path: str, fingerprint: str, folder: str) -> Tuple[MotionTable, bool]:
+    """(the mechanism's motion table, whether it came from ``folder``): built and stored there
+    under :func:`table_key` the first time, read back afterwards — by any process."""
+    path = os.path.join(folder, table_key(stage, fingerprint) + ".npz")
+    if os.path.exists(path):
+        return load_table(path), True
+    table = build_table(kinematic_model(stage, root_path), km.get_tolerance(stage.GetPrimAtPath(root_path)))
+    os.makedirs(folder, exist_ok=True)
+    save_table(table, path)
+    return table, False
 
 
 class CoSimulation:

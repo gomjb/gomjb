@@ -79,6 +79,13 @@ def test_kinematic_mode_keeps_an_outside_joint(lift):
     km.set_mode(stage.GetPrimAtPath(root_path), "table")
     assert UsdPhysics.Joint(joint).GetJointEnabledAttr().Get() is not False
     assert not UsdPhysics.RigidBodyAPI(box).GetKinematicEnabledAttr().Get()
+    # the payload is no ground for the exact solver: the platform still moves with the drives
+    model = kn.kinematic_model(stage, root_path)
+    assert model.notes["joints to dynamic bodies outside the mechanism ignored"] == ["PayloadFix"]
+    cosim = kn.CoSimulation(model)
+    platform = cosim.bodies.index("Platform")
+    z0 = cosim.frames(0.0)[platform, 2]
+    assert cosim.frames(1.0)[platform, 2] - z0 == pytest.approx(_rise(-0.2), abs=1e-7)
 
 
 def test_kinematic_mechanism_validates_without_joint_warnings(lift):
@@ -109,7 +116,7 @@ def test_copies_of_a_mechanism_share_one_group(stage):
         km.set_mode(stage.GetPrimAtPath(r), "table")
 
     def groups():
-        return sorted(sorted(str(p.GetName()) for p in g) for g in km.kinematic_groups(stage))
+        return sorted(sorted(str(p.GetName()) for p in g) for _, g in km.kinematic_groups(stage))
 
     assert groups() == [["A", "B", "C"], ["D"]]
     # the moved copy's kinematics: the same root-local frames as the original's
@@ -118,6 +125,60 @@ def test_copies_of_a_mechanism_share_one_group(stage):
         assert np.abs(a.frames(t) - c.frames(t)).max() < 1e-9
     UsdPhysics.PrismaticJoint(stage.GetPrimAtPath(roots[1] + "/Joints/Actuator_L")).GetUpperLimitAttr().Set(0.05)
     assert groups() == [["A", "C"], ["B"], ["D"]]
+
+
+def _cloned_envs(stage, n):
+    """Isaac Sim's cloner by default: env_i inherits env_0 and only gets its own placement."""
+    from pxr import Sdf, UsdGeom
+
+    ph.ensure_physics_scene(stage)
+    UsdGeom.Xform.Define(stage, "/World/envs/env_0")
+    root = me.build_scissor_lift(stage, stages=2, parent="/World/envs/env_0")["root"][0]
+    for side in "LR":
+        mo.set_motion(stage.GetPrimAtPath(f"{root}/Joints/Actuator_{side}"), mo.Motion("displacement", "-0.1*TIME"))
+    km.set_mode(stage.GetPrimAtPath(root), "table")
+    for i in range(1, n):
+        spec = Sdf.CreatePrimInLayer(stage.GetRootLayer(), f"/World/envs/env_{i}")
+        spec.specifier = Sdf.SpecifierDef
+        spec.inheritPathList.Prepend("/World/envs/env_0")
+        UsdGeom.XformCommonAPI(stage.GetPrimAtPath(f"/World/envs/env_{i}")).SetTranslate((3.0 * i, 0, 0))
+    return root
+
+
+def test_inheriting_clones_group_without_reading_them(stage, monkeypatch):
+    _cloned_envs(stage, 64)
+    calls = []
+    real = km._fingerprint
+    monkeypatch.setattr(km, "_fingerprint", lambda r, o: calls.append(r) or real(r, o))
+    groups = km.kinematic_groups(stage)
+    assert len(groups) == 1 and len(groups[0][1]) == 64
+    assert len(calls) == 1  # one fingerprint for the whole group
+    # an opinion on one clone's joint makes it a mechanism of its own
+    UsdPhysics.PrismaticJoint(stage.GetPrimAtPath("/World/envs/env_7/ScissorLift/Joints/Actuator_L")) \
+        .GetUpperLimitAttr().Set(0.05)
+    assert sorted(len(g) for _, g in km.kinematic_groups(stage)) == [1, 63]
+
+
+def test_motion_table_cache(lift, tmp_path):
+    stage, root_path = lift
+    root = stage.GetPrimAtPath(root_path)
+    km.set_mode(root, "table", tolerance=1e-3)
+    fp = km.fingerprint(root)
+    built, hit = kn.cached_table(stage, root_path, fp, str(tmp_path))
+    assert not hit and len(list(tmp_path.iterdir())) == 1
+    loaded, hit = kn.cached_table(stage, root_path, fp, str(tmp_path))
+    assert hit
+    assert (loaded.drives, loaded.motion, loaded.linear, loaded.bodies, loaded.error, loaded.tolerance) == \
+        (built.drives, built.motion, built.linear, built.bodies, built.error, built.tolerance)
+    assert np.array_equal(loaded.stroke, built.stroke) and np.array_equal(loaded.frames, built.frames)
+    # what the table depends on is in the key: an edited joint, the stage's scale
+    UsdPhysics.PrismaticJoint(stage.GetPrimAtPath(root_path + "/Joints/Actuator_L")).GetUpperLimitAttr().Set(0.05)
+    assert km.fingerprint(root) != fp
+    from pxr import UsdGeom
+
+    key = kn.table_key(stage, fp)
+    UsdGeom.SetStageMetersPerUnit(stage, 0.01)
+    assert kn.table_key(stage, fp) != key
 
 
 def test_exact_solver_reads_a_kinematic_mechanism_as_designed(lift):

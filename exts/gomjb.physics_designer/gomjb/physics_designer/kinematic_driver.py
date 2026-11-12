@@ -19,6 +19,7 @@ from __future__ import annotations
 import time
 from typing import List, Optional, Sequence
 
+import carb.tokens
 import numpy as np
 import warp as wp
 from isaacsim.core.simulation_manager import SimulationManager
@@ -106,28 +107,37 @@ def _com(body: Usd.Prim) -> List[float]:
     return [0.0, 0.0, 0.0] if c is None or any(abs(v) == float("inf") for v in c) else [float(v) for v in c]
 
 
+def table_cache() -> str:
+    """Folder of the motion table cache, Kit's cache shared by all apps (like its shader cache):
+    a table built in the GUI serves a batch run of the same model, and the other way round."""
+    return carb.tokens.get_tokens_interface().resolve("${omni_cache}/gomjb.physics_designer/motion_tables")
+
+
 class KinematicDriver:
     """Moves the bodies of the mechanism under ``root_path`` — and of every copy of it whose root
     is in ``instances`` (cloned environments: the same body paths below their root) — to its
-    kinematics. Created once the physics simulation view exists (after Play)."""
+    kinematics. Created once the physics simulation view exists (after Play). A motion table is
+    read from :func:`table_cache` under the mechanism's ``fingerprint`` when it was built before."""
 
-    def __init__(self, stage: Usd.Stage, root_path: str, instances: Optional[Sequence[str]] = None):
+    def __init__(self, stage: Usd.Stage, root_path: str, instances: Optional[Sequence[str]] = None,
+                 fingerprint: Optional[str] = None):
         root = stage.GetPrimAtPath(root_path)
         self.root_path = str(root_path)
         self.mode = km.get_mode(root)
         if self.mode not in km.KINEMATIC_MODES:
             raise ValueError(f"{root_path} is not in a kinematic mode")
         t0 = time.perf_counter()
-        model = kn.kinematic_model(stage, self.root_path)
         self.table: Optional[kn.MotionTable] = None
         self._cosim: Optional[kn.CoSimulation] = None
+        self.cached = False
         if self.mode == "table":
-            self.table = kn.build_table(model, km.get_tolerance(root))
+            fp = fingerprint or km.fingerprint(root)
+            self.table, self.cached = kn.cached_table(stage, self.root_path, fp, table_cache())
             self._profile = self.table.profile()
             self.bodies = self.table.bodies
             stroke, frames = self.table.stroke, self.table.frames
         else:  # two rows, the frames at the step's start and end: stroke 0 -> 1
-            self._cosim = kn.CoSimulation(model)
+            self._cosim = kn.CoSimulation(kn.kinematic_model(stage, self.root_path))
             self._profile = None
             self.bodies = self._cosim.bodies
             stroke, frames = np.array([0.0, 1.0]), np.repeat(self._cosim.frames(0.0)[None], 2, axis=0)
@@ -169,9 +179,10 @@ class KinematicDriver:
         how = "velocity + pose (GPU)" if self._gpu else "kinematic targets (CPU)"
         if self.table is not None:
             t = self.table
+            where = "from the cache" if self.cached else "built"
             return (f"{name}: motion table of {', '.join(t.drives)}, {len(t.stroke)} points, interpolation error "
                     f"{t.error[0] * 1e3:.3g} mm / {t.error[1]:.3g} deg (tolerance {t.tolerance * 1e3:.3g} mm), "
-                    f"built in {self.build_time:.1f} s; {how}")
+                    f"{where} in {self.build_time:.1f} s; {how}")
         return f"{name}: co-simulation, position analysis every physics step; {how}"
 
     def apply(self, t: float, dt: float) -> None:

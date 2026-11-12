@@ -63,17 +63,17 @@ class MotionRuntime:
         self._profiles, self._drivers, self._stopped = None, None, True
         stage = omni.usd.get_context().get_stage()
         if stage is not None:
-            for path, profile in mo.profiles(stage).items():
+            for path, profile in mo.profiles(stage, skip=km.is_kinematic_root).items():
                 mo.apply_targets(stage.GetPrimAtPath(path), profile, 0.0)
 
     def _start_drivers(self, stage) -> List:
         from .kinematic_driver import KinematicDriver
 
         drivers, self.reports = [], []
-        for group in km.kinematic_groups(stage):  # copies of one mechanism share a table and a driver
+        for fingerprint, group in km.kinematic_groups(stage):  # copies of one mechanism share a table and a driver
             root = group[0]
             try:
-                driver = KinematicDriver(stage, str(root.GetPath()), [str(r.GetPath()) for r in group])
+                driver = KinematicDriver(stage, str(root.GetPath()), [str(r.GetPath()) for r in group], fingerprint)
             except Exception as exc:  # the mechanism then stays where it is: say why
                 self.reports.append(f"{root.GetName()}: {exc}")
                 carb.log_error(f"[Physics Designer] kinematic mechanism {root.GetPath()}: {exc}")
@@ -88,7 +88,8 @@ class MotionRuntime:
         if stage is None:
             return
         if self._profiles is None:
-            self._profiles = {path: p for path, p in mo.profiles(stage).items()
+            # joints of kinematic mechanisms are disabled: the kinematic driver plays their motions
+            self._profiles = {path: p for path, p in mo.profiles(stage, skip=km.is_kinematic_root).items()
                               if UsdPhysics.Joint(stage.GetPrimAtPath(path)).GetJointEnabledAttr().Get() is not False}
         if self._drivers is None:
             self._drivers = self._start_drivers(stage)

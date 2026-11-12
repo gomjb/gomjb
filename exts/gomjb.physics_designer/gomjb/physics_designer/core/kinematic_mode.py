@@ -19,7 +19,7 @@ travels with the model (and with cloned copies of it).
 from __future__ import annotations
 
 import hashlib
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 from pxr import Gf, Sdf, Usd, UsdPhysics
@@ -103,9 +103,27 @@ def mechanism_root_of(prim: Usd.Prim) -> Optional[Usd.Prim]:
     return None
 
 
+def is_kinematic_root(prim: Usd.Prim) -> bool:
+    return get_mode(prim) in KINEMATIC_MODES
+
+
+def _scan(stage: Usd.Stage) -> Tuple[List[Usd.Prim], List[Usd.Prim]]:
+    """(mechanism roots in a kinematic mode, joints outside all of them) in one traversal that
+    does not enter the mechanisms (nothing inside one is looked at)."""
+    roots, joints = [], []
+    it = iter(Usd.PrimRange.Stage(stage))
+    for prim in it:
+        if is_kinematic_root(prim):
+            roots.append(prim)
+            it.PruneChildren()
+        elif prim.IsA(UsdPhysics.Joint):
+            joints.append(prim)
+    return roots, joints
+
+
 def kinematic_roots(stage: Usd.Stage) -> List[Usd.Prim]:
     """Mechanism roots in a kinematic mode."""
-    return [p for p in stage.Traverse() if get_mode(p) in KINEMATIC_MODES]
+    return _scan(stage)[0]
 
 
 def _canon(value) -> bytes:
@@ -118,11 +136,27 @@ def _canon(value) -> bytes:
     return repr(value).encode()
 
 
-def _fingerprint(root: Usd.Prim) -> str:
+def _hash_joint(h, joint: Usd.Prim, base: Sdf.Path, name: str) -> None:
+    h.update(f"{name}:{joint.GetTypeName()}".encode())
+    # a ground side's frame is in world coordinates, so it differs between placed copies; the exact
+    # solver anchors such a joint on its body side (mbd), so it is not part of the identity
+    j = UsdPhysics.Joint(joint)
+    ground = {i for i, rel in enumerate((j.GetBody0Rel(), j.GetBody1Rel())) if not rel.GetTargets()}
+    skip = {f"physics:local{k}{i}" for i in ground for k in ("Pos", "Rot")}
+    for attr in joint.GetAuthoredAttributes():
+        if attr.GetName() not in skip:
+            h.update(attr.GetName().encode())
+            h.update(_canon(attr.Get()))
+    for rel in joint.GetAuthoredRelationships():
+        h.update(f"{rel.GetName()}>{[str(t.MakeRelativePath(base)) for t in rel.GetTargets()]}".encode())
+
+
+def _fingerprint(root: Usd.Prim, outside: List[Usd.Prim]) -> str:
     """What a mechanism's kinematics depends on, wherever its root is: the bodies' frames relative
-    to the root, and every authored property of the joints under it (relationships relative to
-    the root) — joint frames, drives, limits, motions, mode. Copies of one mechanism (cloned
-    environments, duplicates) share it; a copy edited afterwards does not."""
+    to the root, every authored property of its joints — under the root, and ``outside`` it
+    (relationships relative to the root): joint frames, drives, limits, motions — and its mode.
+    Copies of one mechanism (cloned environments, duplicates) share it; a copy edited afterwards
+    does not."""
     base = root.GetPath()
     root_inv = mu.rigid_part(tf.world_matrix(root)).GetInverse()
     h = hashlib.sha1()
@@ -131,28 +165,15 @@ def _fingerprint(root: Usd.Prim) -> str:
             h.update(str(prim.GetPath().MakeRelativePath(base)).encode())
             h.update(_canon(tf.world_matrix(prim) * root_inv))
         elif prim.IsA(UsdPhysics.Joint):
-            h.update(f"{prim.GetPath().MakeRelativePath(base)}:{prim.GetTypeName()}".encode())
-            # a ground side's frame is in world coordinates, so it differs between placed copies; the
-            # exact solver anchors such a joint on its body side (mbd), so it is not part of the identity
-            j = UsdPhysics.Joint(prim)
-            ground = {i for i, rel in enumerate((j.GetBody0Rel(), j.GetBody1Rel())) if not rel.GetTargets()}
-            skip = {f"physics:local{k}{i}" for i in ground for k in ("Pos", "Rot")}
-            for attr in prim.GetAuthoredAttributes():
-                if attr.GetName() not in skip:
-                    h.update(attr.GetName().encode())
-                    h.update(_canon(attr.Get()))
-            for rel in prim.GetAuthoredRelationships():
-                h.update(f"{rel.GetName()}>{[str(t.MakeRelativePath(base)) for t in rel.GetTargets()]}".encode())
+            _hash_joint(h, prim, base, str(prim.GetPath().MakeRelativePath(base)))
+    for joint in sorted(outside, key=lambda p: p.GetName()):
+        _hash_joint(h, joint, base, "<outside>/" + joint.GetName())
     h.update(f"{get_mode(root)}:{get_tolerance(root)}".encode())
     return h.hexdigest()
 
 
-def kinematic_groups(stage: Usd.Stage) -> List[List[Usd.Prim]]:
-    """Mechanism roots in a kinematic mode, grouped into copies of one mechanism (equal
-    :func:`_fingerprint`): one motion table and one kinematic driver serve a whole group. A
-    mechanism with inner joints outside its root (the Joint tool's /World/Joints) is its own
-    group — its fingerprint would not see them."""
-    roots = kinematic_roots(stage)
+def _attached(roots: List[Usd.Prim], joints: List[Usd.Prim]) -> Dict[Sdf.Path, List[Usd.Prim]]:
+    """Root path -> the joints (outside every root) that act on a body under it."""
     by_path = {r.GetPath() for r in roots}
 
     def root_above(path: Sdf.Path) -> Optional[Sdf.Path]:
@@ -162,19 +183,44 @@ def kinematic_groups(stage: Usd.Stage) -> List[List[Usd.Prim]]:
             path = path.GetParentPath()
         return None
 
-    alone = set()
-    for prim in stage.Traverse():  # joints outside every kinematic root that act on one of them
-        if not prim.IsA(UsdPhysics.Joint) or root_above(prim.GetPath()) is not None:
-            continue
-        for body in jt.joint_bodies(prim):
-            r = root_above(body.GetPath()) if body is not None else None
-            if r is not None:
-                alone.add(r)
-    groups: Dict[str, List[Usd.Prim]] = {}
+    out: Dict[Sdf.Path, List[Usd.Prim]] = {}
+    for joint in joints:
+        for r in {root_above(b.GetPath()) for b in jt.joint_bodies(joint) if b is not None} - {None}:
+            out.setdefault(r, []).append(joint)
+    return out
+
+
+def fingerprint(root: Usd.Prim) -> str:
+    """The identity of one mechanism's kinematics (as :func:`kinematic_groups` computes it)."""
+    stage = root.GetStage()
+    joints = [p for p in stage.Traverse() if p.IsA(UsdPhysics.Joint) and not p.GetPath().HasPrefix(root.GetPath())]
+    return _fingerprint(root, _attached([root], joints).get(root.GetPath(), []))
+
+
+def _composition(root: Usd.Prim) -> Tuple[Tuple[str, str], ...]:
+    """The specs a prim is composed of. Roots composed of the same specs are the same mechanism
+    whatever their own path: their subtrees are composed of the same specs' namespace children,
+    and an opinion on anything inside one of them would add a spec at its root (a spec needs its
+    parents). Copies made by inheriting a source (Isaac Sim's cloner, the default) share it."""
+    return tuple((s.layer.identifier, str(s.path)) for s in root.GetPrimStack())
+
+
+def kinematic_groups(stage: Usd.Stage) -> List[Tuple[str, List[Usd.Prim]]]:
+    """Mechanism roots in a kinematic mode, grouped into copies of one mechanism, with the group's
+    :func:`fingerprint`: one motion table (cached under it) and one kinematic driver serve a whole
+    group. Roots composed of the same specs group at once (:func:`_composition`, no property is
+    read); the groups left are merged by fingerprint, computed once per group (copies made by
+    copying specs, or built alike). A root with joints outside it (the Joint tool's /World/Joints)
+    takes no shortcut: its fingerprint includes them."""
+    roots, outside = _scan(stage)
+    attached = _attached(roots, outside)
+    composed: Dict[object, List[Usd.Prim]] = {}
     for r in roots:
-        key = str(r.GetPath()) if r.GetPath() in alone else _fingerprint(r)
-        groups.setdefault(key, []).append(r)
-    return list(groups.values())
+        composed.setdefault(str(r.GetPath()) if r.GetPath() in attached else _composition(r), []).append(r)
+    groups: Dict[str, List[Usd.Prim]] = {}
+    for members in composed.values():
+        groups.setdefault(_fingerprint(members[0], attached.get(members[0].GetPath(), [])), []).extend(members)
+    return list(groups.items())
 
 
 def mechanism_bodies(root: Usd.Prim) -> List[Usd.Prim]:

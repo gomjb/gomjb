@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.9.0] - 2026-11-12
+### Added
+- Motion table cache (`kinematics.cached_table`, `save_table` / `load_table`): tables are stored in
+  Kit's cache (`${omni_cache}/gomjb.physics_designer/motion_tables`) under the mechanism's
+  kinematic fingerprint, the stage's scale and the table format. *Apply kinematics* builds the
+  table and shows its size, error and time; Play reads it, as does a batch run of the same model.
+
+### Changed
+- Grouping copies of a mechanism: roots composed of the same USD specs (Isaac Sim's cloner by
+  default inherits the source environment) group without reading a property. Other copies are
+  compared by fingerprint, computed once per group. A fingerprint now includes the mechanism's
+  joints outside its root. `kinematic_groups` returns the fingerprint with each group.
+- Stage scans for kinematic roots and joint motions no longer enter kinematic mechanisms. The
+  physics scene is found breadth first (`physics.find_physics_scene`).
+- Exact solver: joints to dynamic bodies outside the mechanism (a payload fixed to it) are left
+  out (listed in the notes) instead of fixing the mechanism to the ground.
+- First step after Play with 4096 cloned lifts: 52 s -> 7.7 s with the cached table (1.3 s of it
+  in the designer, the rest PhysX starting the scene); 27.9 s the first time.
+
 ## [0.8.0] - 2026-11-12
 ### Added
 - Kinematic mechanisms (`core.kinematic_mode`): a mechanism's *Kinematics* is `physics` (PhysX

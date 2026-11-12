@@ -179,14 +179,27 @@ def articulation_root_of(prim: Usd.Prim) -> Optional[Usd.Prim]:
     return None
 
 
+def find_physics_scene(stage: Usd.Stage) -> Optional[Usd.Prim]:
+    """The first PhysicsScene, breadth first: scenes sit near the top (/physicsScene,
+    /World/PhysicsScene), so a stage of thousands of cloned environments is not walked."""
+    level = list(stage.GetPseudoRoot().GetChildren())
+    while level:
+        for prim in level:
+            if prim.IsA(UsdPhysics.Scene):
+                return prim
+        level = [c for prim in level for c in prim.GetChildren()]
+    return None
+
+
 def ensure_physics_scene(stage: Usd.Stage, path: Optional[str] = None, gravity: float = 9.81) -> Usd.Prim:
-    """Return the first PhysicsScene or create one with gravity along -up (in stage units).
+    """Return the first PhysicsScene (:func:`find_physics_scene`) or create one with gravity along
+    -up (in stage units).
 
     A created scene runs PhysX on the CPU (see :func:`set_cpu_dynamics`).
     """
-    for prim in stage.Traverse():
-        if prim.IsA(UsdPhysics.Scene):
-            return prim
+    found = find_physics_scene(stage)
+    if found is not None:
+        return found
     path = path or str(default_root(stage).AppendChild("PhysicsScene"))
     scene = UsdPhysics.Scene.Define(stage, path)
     up = stage_up_axis(stage)

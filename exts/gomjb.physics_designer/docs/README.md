@@ -306,6 +306,8 @@ Analysis 섹션 아래쪽. PhysX 시뮬레이션(근사, 0.1–0.5 % 오차)과 
   PhysX 기어·랙앤피니언, mimic 조인트는 지원하지 않으며, 조용히 빠지지 않고 오류로 알립니다.
 * 월드(ground)에 붙은 조인트는 body 쪽 프레임에 고정합니다. 조인트를 만든 뒤 옮기거나 복제한 기구도
   지금 서 있는 자리에서 풉니다(월드 쪽 프레임은 월드 좌표라 복제 시 옛 위치가 남습니다).
+* 기구 밖의 동역학 body(예: 플랫폼에 고정한 짐)와 연결된 조인트는 해석에서 빼고 요약에 표시합니다.
+  그 body를 ground로 보면 기구가 월드에 고정되기 때문입니다.
 * 드라이브(stiffness > 0)는 목표값으로 **위치 지정 구동**(RecurDyn의 Motion)이 되고, 그 승수가 정확한
   액추에이터 힘입니다. damping만 있는 드라이브와 조인트 리밋은 해석에 들어가지 않습니다(요약에 표시).
 * *Solve static*: 현재 드라이브 목표에서의 정적 평형. *Sweep drive*: 드라이브를 *From*→*To* 로 움직이며 각
@@ -391,8 +393,15 @@ kinematic body가 되어 정확해석기의 해(루프가 정확히 닫힌 위�
   보간 오차가 *Table tolerance*(기본 0.1 mm, 회전 오차는 기구 반경을 곱해 길이로 환산)를 넘는 구간을
   반으로 나눕니다. 오차는 구간 중점의 실제 해와 비교해 측정합니다. 시저가 평평해지는 쪽처럼 기구학이 급하게
   변하는 곳에만 점이 촘촘해집니다(등간격 61점은 37 mm가 틀렸습니다).
+* 운동표는 *Apply kinematics* 때 미리 만들어지고(상태줄에 점 수·오차·시간 표시), Play 때는 **캐시**에서
+  읽습니다. 캐시는 Kit 캐시 폴더 `${omni_cache}/gomjb.physics_designer/motion_tables`(이 설치에서는
+  `kit\cache\...`, 파일 하나 약 0.4 MB)에 있고, 기구학 fingerprint(아래)와 스테이지 단위로 구분합니다. 모델을
+  고치면 새로 만들고, GUI와 배치 실행(python.bat)이 같은 캐시를 씁니다.
 * 같은 기구의 복제본(복제 환경, 복사본)은 자동으로 묶여 운동표 하나와 커널 실행 하나를 같이 씁니다.
-  루트 기준 body 자세와 조인트 속성이 같으면 같은 기구로 봅니다. 복사한 뒤 고친 기구는 따로 계산합니다.
+  Isaac Sim의 cloner(기본 `copy_from_source=False`)처럼 원본을 상속해 만든 복제본은 같은 USD spec으로
+  이루어졌다는 것(prim stack)만으로 묶고, 속성은 읽지 않습니다. 그 밖의 복사본은 fingerprint로 비교합니다.
+  fingerprint는 루트 기준 body 자세와 조인트 속성(루트 밖에 있는 그 기구의 조인트 포함)입니다. 복사한 뒤
+  고친 기구는 따로 계산합니다.
 * 실행: CPU 물리는 kinematic target을, GPU 물리는 자세와 질량중심 속도(다음 자세까지의 차분)를 매 스텝
   넣습니다(PhysX 110.3 GPU 텐서 API에는 kinematic target이 구현되어 있지 않음). 어느 쪽이든 PhysX가
   body의 속도를 알고 있어 위에 놓인 물체가 접촉과 마찰로 실려 갑니다.
@@ -416,7 +425,9 @@ kinematic body가 되어 정확해석기의 해(루프가 정확히 닫힌 위�
 `fabricUpdateVelocities`, `fabricUpdateForceSensors`, `fabricUpdateJointStates` 모두 false — Isaac의
 `isaacsim.exp.full.newton.kit`과 같은 값). 켜 두면 매 스텝 모든 body 변환을 CPU로 Fabric에 복사해 1024개에서
 22배 느려집니다(GPU 사용률 5%). 화면이 필요하면 `--/physics/fabricUseGPUInterop=true`.
-Play 직후 첫 스텝에서 복제본 묶기(루트당 약 4 ms)와 운동표 생성을 합니다. 4096개에서 52 s가 걸렸습니다.
+Play 직후 첫 스텝(4096개 복제): 운동표가 캐시에 있으면 **7.7 s**입니다. 이 중 디자이너 코드는 1.3 s
+(텐서 뷰 생성 0.6 s, 복제본 묶기 0.12 s)이고, 나머지는 PhysX가 4096개 env를 올리는 시간입니다. 처음 만드는
+실행은 27.9 s입니다. 캐시와 복제본 묶기를 넣기 전에는 52 s, 그 전에는 307 s였습니다.
 
 ---
 

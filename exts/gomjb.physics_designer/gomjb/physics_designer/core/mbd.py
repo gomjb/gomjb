@@ -6,7 +6,8 @@ does: rigid bodies with their explicit mass properties, every joint an exact con
 a prescribed motion ("motion" in RecurDyn) whose multiplier is the exact actuator force.
 
 * Bodies: prims with RigidBodyAPI (+ MassAPI mass / centerOfMass / diagonalInertia, as the
-  Modeler authors them). Kinematic bodies and non-rigid joint targets are ground. A mechanism
+  Modeler authors them). Kinematic bodies and non-rigid joint targets are ground; joints to
+  dynamic bodies outside the mechanism (a payload fixed to it) are left out. A mechanism
   in a kinematic mode (:mod:`kinematic_mode`) is read as designed: its bodies and joints count
   as dynamic and enabled.
 * Joints: fixed / revolute / prismatic / spherical / D6 (locked DOFs) as Exudyn generic joints,
@@ -43,6 +44,7 @@ from . import joints as jt
 from . import kinematic_mode as km
 from . import math_utils as mu
 from . import motion as mo
+from . import physics as ph
 from . import transform as tf
 from .results import Recording
 from .stage_utils import si_factors
@@ -157,6 +159,10 @@ class MbdModel:
         if any(s.split(":")[0] in MIMIC_APIS for s in _api_schemas(prim)):
             raise ValueError(f"{prim.GetPath()}: mimic joints are not supported by the exact solver")
         b0, b1 = jt.joint_bodies(prim)
+        if any(b is not None and str(b.GetPath()) not in self.bodies and km.designed_dynamic(b) for b in (b0, b1)):
+            # a dynamic body outside the mechanism (a payload) is not ground: it moves with the mechanism
+            self.notes.setdefault("joints to dynamic bodies outside the mechanism ignored", []).append(name)
+            return
         (p0, r0), (p1, r1) = jt.joint_world_frames(prim)
         # the frame on a body of the model: a joint to the ground anchors the mechanism where it stands,
         # also when its ground-side frame is stale (a copy moved or cloned after the joint was made)
@@ -546,13 +552,13 @@ def _bushing_gains(prim: Usd.Prim) -> Tuple[np.ndarray, np.ndarray]:
 
 
 def _gravity(stage: Usd.Stage) -> Gf.Vec3d:
-    for prim in stage.Traverse():
-        if prim.IsA(UsdPhysics.Scene):
-            scene = UsdPhysics.Scene(prim)
-            d = Gf.Vec3d(scene.GetGravityDirectionAttr().Get() or Gf.Vec3f(0))
-            m = scene.GetGravityMagnitudeAttr().Get()
-            if d.GetLength() > 0 and m is not None and not math.isinf(m) and m >= 0:
-                return d.GetNormalized() * float(m)
+    prim = ph.find_physics_scene(stage)
+    if prim is not None:
+        scene = UsdPhysics.Scene(prim)
+        d = Gf.Vec3d(scene.GetGravityDirectionAttr().Get() or Gf.Vec3f(0))
+        m = scene.GetGravityMagnitudeAttr().Get()
+        if d.GetLength() > 0 and m is not None and not math.isinf(m) and m >= 0:
+            return d.GetNormalized() * float(m)
     up = mu.AXIS_VECTORS[UsdGeom.GetStageUpAxis(stage) or "Z"]
     return -up * (9.81 / si_factors(stage)["length"])
 

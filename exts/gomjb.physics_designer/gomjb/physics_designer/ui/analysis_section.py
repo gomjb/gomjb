@@ -153,8 +153,21 @@ class AnalysisSection:
         except Exception as exc:
             self._w._status(f"Kinematics: {exc}", error=True)
             return
-        what = {"physics": "PhysX simulates its joints", "table": "motion table built at Play",
-                "cosim": "exact solver every physics step"}[mode]
+        what = {"physics": "PhysX simulates its joints", "cosim": "exact solver every physics step"}.get(mode)
+        if mode == "table":  # build it now (into the cache Play reads): its size and error show here
+            from ..core import kinematics as kn
+            from ..kinematic_driver import table_cache
+
+            stage = self._w._stage()
+            t0 = time.perf_counter()
+            try:
+                table, cached = kn.cached_table(stage, path, km.fingerprint(stage.GetPrimAtPath(path)), table_cache())
+            except Exception as exc:  # the mode stays; Play reports the same error
+                self._w._status(f"Kinematics 'table': motion table failed: {exc}", error=True)
+                return
+            what = (f"motion table {len(table.stroke)} points, error {table.error[0] * 1e3:.3g} mm / "
+                    f"{table.error[1]:.3g} deg, {'from the cache' if cached else 'built'} in "
+                    f"{time.perf_counter() - t0:.1f} s")
         self._w._status(f"{path}: kinematics '{mode}' - {what}.")
 
     def start(self):
