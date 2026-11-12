@@ -302,7 +302,10 @@ Analysis 섹션 아래쪽. PhysX 시뮬레이션(근사, 0.1–0.5 % 오차)과 
 * 바디: RigidBodyAPI + MassAPI(질량·질량중심·주관성)를 그대로 사용 — 모델러가 만든 값.
   kinematic 바디와 바디가 아닌 조인트 대상은 ground.
 * 조인트: fixed / revolute / prismatic / spherical / D6(잠긴 축)이 **정확한 구속**이 되고, 루프를 닫는
-  조인트(`excludeFromArticulation`)도 포함됩니다. 라그랑주 승수가 곧 조인트 반력입니다.
+  조인트(`excludeFromArticulation`)도 포함됩니다. 라그랑주 승수가 곧 조인트 반력입니다. 거리 조인트,
+  PhysX 기어·랙앤피니언, mimic 조인트는 지원하지 않으며, 조용히 빠지지 않고 오류로 알립니다.
+* 월드(ground)에 붙은 조인트는 body 쪽 프레임에 고정합니다. 조인트를 만든 뒤 옮기거나 복제한 기구도
+  지금 서 있는 자리에서 풉니다(월드 쪽 프레임은 월드 좌표라 복제 시 옛 위치가 남습니다).
 * 드라이브(stiffness > 0)는 목표값으로 **위치 지정 구동**(RecurDyn의 Motion)이 되고, 그 승수가 정확한
   액추에이터 힘입니다. damping만 있는 드라이브와 조인트 리밋은 해석에 들어가지 않습니다(요약에 표시).
 * *Solve static*: 현재 드라이브 목표에서의 정적 평형. *Sweep drive*: 드라이브를 *From*→*To* 로 움직이며 각
@@ -361,6 +364,60 @@ PhysX와 달리 루프를 닫는 조인트의 반력도 나오고, 결과가 시
 * `bushings` — Adams·Altair가 권장하는 대로 강성 부싱으로 분담을 구합니다. 실제 분담이 중요하면 실제 부품
   강성을 넣으세요. 아주대 연구처럼 부품 자체를 유연체로 만드는 것이 더 정확하지만, 이 디자이너는 아직 강체만 다룹니다.
 
+### 2.11 Kinematics (기구학 모드: 물리 / 운동표 / Co-Sim)
+Analysis 섹션의 *Kinematics*에서 기구를 시뮬레이션할 때 어떻게 움직일지 고르고 *Apply kinematics*를
+누릅니다(Undo 가능). 모드는 기구 루트에 저장되므로 모델과 함께 다니고, 복제된 기구에도 그대로 따라갑니다.
+
+| 모드 | 기구를 움직이는 쪽 | 실행 중 계산 | 쓰는 경우 |
+|---|---|---|---|
+| `physics` (기본) | PhysX가 조인트와 드라이브를 풉니다(지금까지의 방식) | GPU/CPU 물리 | 하중이 기구의 운동을 바꾸는 경우 |
+| `table` (운동표) | 정확해석기(Exudyn)가 Play 때 구동 행정을 따라 위치해석을 한 번 하고, 실행 중에는 보간만 합니다 | 표 보간(GPU 커널 1회) | 정해진 운동, 대량 병렬 |
+| `cosim` (Co-Sim) | 정확해석기가 매 물리 스텝마다 위치해석을 합니다 | CPU 해석 1회/스텝 | 독립 구동이 여러 개인 경우, 운동표 범위를 벗어나는 경우 |
+
+Process Simulate처럼 장치의 기구학과 물리를 분리하는 방식입니다. `table`·`cosim`에서는 기구의 body가
+kinematic body가 되어 정확해석기의 해(루프가 정확히 닫힌 위치)를 따라가고, PhysX는 그 기구에 닿는
+물체(상자, 부품)만 풉니다. 루프 벌어짐과 처짐이 0이 되고, 남는 오차는 운동표의 보간 오차뿐입니다.
+모든 조인트(종속 조인트 포함)가 그 해를 따라 맞춰집니다.
+
+* 모델은 USD 하나입니다. 정확해석기가 USD의 body·조인트를 그대로 읽고(2.9), 모드를 바꾸면
+  body를 kinematic으로, 기구 안쪽 조인트를 비활성으로, articulation root를 제거로 바꿉니다. 바꾼 것마다
+  표시를 남기므로 `physics`로 되돌리면 모델이 원래대로 복원되고, 정확해석기는 kinematic 모드에서도
+  설계된 그대로의 기구를 봅니다. 기구 밖의 동역학 body와 연결된 조인트는 그대로 둡니다
+  (예: 플랫폼에 고정한 짐은 물리로 따라옵니다).
+* 구동값은 조인트 모션(2.4, Include Motion)에서 옵니다. 모션이 없는 드라이브는 목표값을 유지합니다.
+  모든 자유도에 드라이브가 있어야 합니다(구동값이 자세를 결정해야 하므로).
+* **운동표**는 행정 하나를 다룹니다. 모션이 있는 구동 조인트들은 같은 모션이어야 하고(예: 리프트 양쪽
+  액추에이터), 범위는 그 조인트들의 리밋입니다(범위 밖은 끝값으로 고정). 처음에 17점을 고르게 푼 뒤,
+  보간 오차가 *Table tolerance*(기본 0.1 mm, 회전 오차는 기구 반경을 곱해 길이로 환산)를 넘는 구간을
+  반으로 나눕니다. 오차는 구간 중점의 실제 해와 비교해 측정합니다. 시저가 평평해지는 쪽처럼 기구학이 급하게
+  변하는 곳에만 점이 촘촘해집니다(등간격 61점은 37 mm가 틀렸습니다).
+* 같은 기구의 복제본(복제 환경, 복사본)은 자동으로 묶여 운동표 하나와 커널 실행 하나를 같이 씁니다.
+  루트 기준 body 자세와 조인트 속성이 같으면 같은 기구로 봅니다. 복사한 뒤 고친 기구는 따로 계산합니다.
+* 실행: CPU 물리는 kinematic target을, GPU 물리는 자세와 질량중심 속도(다음 자세까지의 차분)를 매 스텝
+  넣습니다(PhysX 110.3 GPU 텐서 API에는 kinematic target이 구현되어 있지 않음). 어느 쪽이든 PhysX가
+  body의 속도를 알고 있어 위에 놓인 물체가 접촉과 마찰로 실려 갑니다.
+* kinematic 기구는 articulation이 아니므로 *Start recording*은 쓰지 않습니다. 기구의 힘·반력은 정확해석기
+  (2.9)로 구합니다. 상태 메시지와 로그에 운동표의 점 수, 측정 오차, 생성 시간이 나옵니다.
+
+**검증**
+
+| 케이스 | 결과 | 기준 |
+|---|---|---|
+| 3단 양면 시저, 운동표(0.1 mm), 행정 전 구간 35점 | 플랫폼 상승 오차 ≤ 0.1 mm, 팔 회전 ≤ 0.01°, 플랫폼 수평 | 해석식 n·L·(sin a − sin a0) |
+| 같은 모델, 운동표 크기 | 419점, 3.8 s, 측정 오차 0.081 mm / 0.001° | |
+| Co-Sim, 매 스텝 | 오차 < 1e-7 m | 해석식 |
+| Isaac Sim, 2단 리프트 + 상자, CPU 물리 (`table`, `cosim`) | 플랫폼 0.69 m 상승 ±1 mm, 상자가 함께 올라감(±10 mm) | Kit 테스트 |
+| Isaac Sim, 3단 리프트 + 상자 16개 복제, GPU 물리 | 플랫폼 상승 1.195 m 오차: 운동표 0.007 mm, Co-Sim 0.000 mm, 상자 16/16 | 해석식 |
+| 같은 모델 1024 / 4096개 복제, 운동표, GPU(RTX 5060 Ti, 60 Hz) | 352 / 221 steps/s, 상자 1024/1024, 4096/4096, 오차 0.007 mm | |
+| 같은 모델 1024개, Co-Sim, GPU | 146 steps/s (CPU 해석 1회/스텝을 모든 복제본이 공유) | |
+| 비교: `physics` 모드, rigid 루프 1024 / 4096개, 상자 없음 | 165 / 79 steps/s, 처짐 4.5 mm, 루프 벌어짐 0.4 mm | |
+
+대량 병렬로 돌릴 때는 Fabric 갱신을 꺼야 합니다(`--/physics/fabricUpdateTransformations=false`,
+`fabricUpdateVelocities`, `fabricUpdateForceSensors`, `fabricUpdateJointStates` 모두 false — Isaac의
+`isaacsim.exp.full.newton.kit`과 같은 값). 켜 두면 매 스텝 모든 body 변환을 CPU로 Fabric에 복사해 1024개에서
+22배 느려집니다(GPU 사용률 5%). 화면이 필요하면 `--/physics/fabricUseGPUInterop=true`.
+Play 직후 첫 스텝에서 복제본 묶기(루트당 약 4 ms)와 운동표 생성을 합니다. 4096개에서 52 s가 걸렸습니다.
+
 ---
 
 ## 3. 스크립트에서 사용하기
@@ -398,6 +455,22 @@ with designer_edit(["/World/Base", "/World/Arm"], "Assemble arm"):
 run_edit(lambda s: mechanisms.build_scissor_lift(s, stages=4, arm_length=1.0))
 ```
 
+kinematic 기구(2.11) — 복제 환경을 만든 뒤 Play만 하면 확장의 모션 런타임이 복제본을 묶어 구동합니다:
+
+```python
+from gomjb.physics_designer.core import kinematic_mode, kinematics, motion
+
+root = stage.GetPrimAtPath("/World/envs/env_0/ScissorLift")
+for side in "LR":
+    motion.set_motion(stage.GetPrimAtPath(f"{root.GetPath()}/Joints/Actuator_{side}"),
+                      motion.Motion("displacement", "STEP(TIME, 0, 0, 1, -0.3)"))
+kinematic_mode.set_mode(root, "table", tolerance=1e-4)      # 또는 "cosim", "physics"(복원)
+# ... GridCloner로 복제 → Play
+
+table = kinematics.build_table(kinematics.kinematic_model(stage, str(root.GetPath())))
+print(len(table.stroke), table.error)                        # 점 수, 측정 보간 오차 (m, deg)
+```
+
 **시뮬레이션 중 제어와 상태 읽기는 텐서 API로** 하세요. 재생 중에는 물리 상태가 USD가 아닌
 Fabric/텐서에 있으므로, USD에서 위치를 읽으면 초기값만 나옵니다. Newton은 실행 중 USD 속성 변경도 읽지 않습니다.
 
@@ -426,6 +499,8 @@ exts/gomjb.physics_designer/
 │   ├── extension.py        # IExt: 커맨드 등록, Tools 메뉴, 창
 │   ├── commands.py         # PhysicsDesignerEditCommand, run_edit(), designer_edit()
 │   ├── recording.py        # Analysis: 물리 스텝마다 articulation 상태·힘 기록 (Isaac Sim 런타임)
+│   ├── motion_runtime.py   # Play 중 조인트 모션(드라이브 목표)과 kinematic 기구(복제본 묶음)
+│   ├── kinematic_driver.py # kinematic 기구: 모든 복제본의 자세를 Warp 커널 하나로, 텐서 API로 입력
 │   ├── core/               # Kit 비의존 (pxr만 사용)
 │   │   ├── math_utils.py   # 양자화, 회전/프레임, 분해/합성
 │   │   ├── transform.py    # 월드 기준 이동/회전/정렬/분배/드롭
@@ -437,6 +512,8 @@ exts/gomjb.physics_designer/
 │   │   ├── results.py      # 시계열 기록, CSV
 │   │   ├── units.py        # 단위계(MKS·MMKS·CGS·MTS·IPS), 표시 단위 <-> SI <-> 스테이지 단위 변환
 │   │   ├── mbd.py          # 정확해석기: USD → Exudyn 구속 모델, 정적·스윕·동적, 중복 구속 처리
+│   │   ├── kinematic_mode.py # 기구 모드(physics / table / cosim) 저장·전환·복원, 복제본 묶기
+│   │   ├── kinematics.py   # 위치해석: 적응형 운동표, Co-Sim
 │   │   ├── validation.py   # 검사 + 자동 수정
 │   │   └── snapshot.py     # 경로 단위 Undo 스냅샷
 │   ├── ui/                 # omni.ui 창(+ modeler_section, analysis_section), 위젯, 라이브 스냅

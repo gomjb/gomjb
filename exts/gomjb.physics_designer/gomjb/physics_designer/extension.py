@@ -18,6 +18,11 @@ def get_window():
     return _instance._window if _instance is not None else None
 
 
+def get_motion_runtime():
+    """The runtime that plays joint motions and kinematic mechanisms, or None."""
+    return _instance._motions if _instance is not None else None
+
+
 class PhysicsDesignerExtension(omni.ext.IExt):
     def on_startup(self, ext_id: str):
         global _instance

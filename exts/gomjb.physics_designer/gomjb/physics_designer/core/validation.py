@@ -38,7 +38,8 @@ def _rigid_ancestor(prim: Usd.Prim) -> Optional[Usd.Prim]:
 def _has_closed_loop_articulation(stage: Usd.Stage) -> bool:
     """A joint excluded from the articulation that still links two bodies of one articulation."""
     for prim in stage.Traverse():
-        if not prim.IsA(UsdPhysics.Joint) or not UsdPhysics.Joint(prim).GetExcludeFromArticulationAttr().Get():
+        j = UsdPhysics.Joint(prim) if prim.IsA(UsdPhysics.Joint) else None
+        if j is None or not j.GetExcludeFromArticulationAttr().Get() or j.GetJointEnabledAttr().Get() is False:
             continue
         if jt.is_bushing(prim):  # a soft loop closure: what keeps the GPU solver stable
             continue
@@ -102,8 +103,8 @@ def validate(stage: Usd.Stage, pos_tol: float = 1e-3, rot_tol_deg: float = 0.5) 
                                     fix="convex_hull"))
         if prim.HasAPI(UsdPhysics.CollisionAPI) and is_guide(prim):
             issues.append(Issue(INFO, path, "Collider on a guide-purpose prim (invisible in renders)."))
-        if prim.IsA(UsdPhysics.Joint):
-            issues.extend(_check_joint(prim, pos_tol, rot_tol_deg))
+        if prim.IsA(UsdPhysics.Joint) and UsdPhysics.Joint(prim).GetJointEnabledAttr().Get() is not False:
+            issues.extend(_check_joint(prim, pos_tol, rot_tol_deg))  # a disabled joint is not simulated
     return issues
 
 

@@ -5,9 +5,10 @@ import pytest
 
 pytest.importorskip("exudyn")
 
-from pxr import Gf, UsdGeom  # noqa: E402
+from pxr import Gf, Usd, UsdGeom  # noqa: E402
 
 from gomjb.physics_designer.core import joints as jt  # noqa: E402
+from gomjb.physics_designer.core import math_utils as mu  # noqa: E402
 from gomjb.physics_designer.core import mechanisms as me  # noqa: E402
 from gomjb.physics_designer.core import modeling as md  # noqa: E402
 from gomjb.physics_designer.core import physics as ph  # noqa: E402
@@ -160,6 +161,48 @@ def test_two_sided_scissor_total_and_redundancy_report(scene):
     for joint, axis in model.released:  # released equations carry no reaction (as in MotionSolve)
         a = AXIS_NAMES.index(axis)
         assert v[f"{'joint_force' if a < 3 else 'joint_torque'}:{joint}:{'xyz'[a % 3]}"] == 0.0
+
+
+def _quat(q):
+    return Gf.Quatd(q[0], Gf.Vec3d(*q[1:]))
+
+
+@pytest.mark.parametrize("meters_per_unit", [1.0, 0.01])
+def test_body_poses_start_at_the_authored_pose(meters_per_unit):
+    """Body frames (not centres of mass), in metres, with the authored orientation."""
+    s = Usd.Stage.CreateInMemory()
+    UsdGeom.SetStageUpAxis(s, UsdGeom.Tokens.z)
+    UsdGeom.SetStageMetersPerUnit(s, meters_per_unit)
+    ph.ensure_physics_scene(s)
+    res = me.build_scissor_lift(s, stages=2, sides=1, angle=30.0, loop_closure="rigid")
+    root = res["root"][0]
+    poses = MbdModel(s, root).body_poses()
+    assert sorted(poses) == sorted(p[len(root) + 1:] for p in res["bodies"])
+    for path in res["bodies"]:
+        p, q = poses[path[len(root) + 1:]]
+        m = tf.world_matrix(s.GetPrimAtPath(path))
+        assert p == pytest.approx([c * meters_per_unit for c in m.ExtractTranslation()], abs=1e-9)
+        assert mu.quat_angle_between(_quat(q), mu.rotation_of(m).GetQuat()) < 1e-6
+
+
+@pytest.mark.parametrize("sides", [1, 2])
+def test_body_poses_follow_the_scissor_kinematics(scene, sides):
+    """Position analysis: with the actuators prescribed the loops close exactly (redundant ones
+    released on the two-sided lift) and the bodies sit where the geometry puts them: the deck
+    rises n*L*(sin a - sin a0) and stays level, every arm turns by a - a0."""
+    stages, L, a0 = 3, 1.2, 25.0
+    res = me.build_scissor_lift(scene, stages=stages, sides=sides, angle=a0, loop_closure="rigid")
+    model = MbdModel(scene, res["root"][0])
+    start = model.body_poses()
+    arms = [n for n in start if n.startswith(("ArmA", "ArmB"))]
+    for a in (35.0, 50.0):
+        model.static_sweep(model.drive_names, [me.scissor_slider_offset(L, a0, a)])
+        poses = model.body_poses()
+        rise = poses["Platform"][0][2] - start["Platform"][0][2]
+        assert rise == pytest.approx(stages * L * (math.sin(math.radians(a)) - math.sin(math.radians(a0))), abs=1e-6)
+        assert mu.quat_angle_between(_quat(poses["Platform"][1]), _quat(start["Platform"][1])) < 1e-4
+        for arm in arms:
+            assert mu.quat_angle_between(_quat(poses[arm][1]), _quat(start[arm][1])) == pytest.approx(a - a0, abs=1e-4)
 
 
 def test_bushings_give_a_symmetric_split_with_the_same_total(scene):

@@ -175,6 +175,69 @@ class TestPhysicsDesignerWindow(omni.kit.test.AsyncTestCase):
             expected = 2 * me.scissor_actuator_force(1.2, deg, 2, 20.0, 5.0, sides=2)
             self.assertAlmostEqual(total / expected, 1.0, delta=1e-6)
 
+    async def _kinematic_lift(self, mode: str):
+        """A lift (bushing loop closures) raised by one motion on both actuators, a box on its deck:
+        in a kinematic mode the exact solver moves the lift and PhysX carries the box with it."""
+        import math
+
+        import omni.timeline
+        from isaacsim.core.experimental.prims import RigidPrim
+
+        from ..commands import run_edit
+        from ..core import kinematic_mode as km
+        from ..core import mechanisms as me
+        from ..core import modeling as md
+        from ..core import motion as mo
+        from ..core import physics as ph
+        from ..core import transform as tf
+        from ..extension import get_motion_runtime
+
+        def build(s):
+            ph.ensure_physics_scene(s)
+            root = me.build_scissor_lift(s, stages=2, angle=30.0)["root"][0]
+            for side in "LR":
+                mo.set_motion(s.GetPrimAtPath(f"{root}/Joints/Actuator_{side}"),
+                              mo.Motion("displacement", "STEP(TIME, 0, 0, 1, -0.3)"))
+            deck = tf.world_position(s.GetPrimAtPath(root + "/Platform"))
+            box = md.create_body(s, "/World/Box", "box", (0.2, 0.2, 0.2), mass=2.0)
+            tf.set_world_position(box, (deck[0], deck[1], deck[2] + 0.02 + 0.1 + 0.002))
+            return root
+
+        root = run_edit(build)
+        analysis = self.window.analysis
+        analysis._root.model.set_value(root)
+        analysis._kin_mode.widget.model.get_item_value_model().set_value(km.MODES.index(mode))
+        analysis.apply_kinematics()
+        self.assertIn(f"kinematics '{mode}'", self.window._status_model.as_string)
+        self.assertEqual(km.get_mode(self.stage.GetPrimAtPath(root)), mode)
+        box = self.stage.GetPrimAtPath("/World/Box")
+        z_box = tf.world_position(box)[2]
+        platform = RigidPrim(root + "/Platform")
+        z_deck = float(platform.get_world_poses()[0].numpy()[0, 2])
+        timeline = omni.timeline.get_timeline_interface()
+        timeline.play()
+        for _ in range(150):  # STEP over 1 s, then hold
+            await omni.kit.app.get_app().next_update_async()
+        deck = float(platform.get_world_poses()[0].numpy()[0, 2])
+        lifted = tf.world_position(box)[2]
+        timeline.stop()
+        reports = get_motion_runtime().reports
+        self.assertTrue(any(("motion table" if mode == "table" else "co-simulation") in r for r in reports), reports)
+        a = math.acos(math.cos(math.radians(30.0)) - 0.3 / 1.2)
+        rise = 2 * 1.2 * (math.sin(a) - math.sin(math.radians(30.0)))
+        self.assertAlmostEqual(deck - z_deck, rise, delta=1e-3)  # the exact kinematics
+        self.assertAlmostEqual(lifted - z_box, rise, delta=0.01)  # the box rode up on the deck
+        await omni.kit.app.get_app().next_update_async()
+        analysis._kin_mode.widget.model.get_item_value_model().set_value(km.MODES.index("physics"))
+        analysis.apply_kinematics()
+        self.assertEqual(km.get_mode(self.stage.GetPrimAtPath(root)), "physics")
+
+    async def test_kinematic_lift_from_motion_table(self):
+        await self._kinematic_lift("table")
+
+    async def test_kinematic_lift_by_cosimulation(self):
+        await self._kinematic_lift("cosim")
+
     async def test_bushing_scissor_on_gpu_dynamics(self):
         """The case that diverged in Isaac Sim 6.1 with rigid loop closures: a closed-loop
         articulation next to another articulation on PhysX GPU dynamics. With bushing loop

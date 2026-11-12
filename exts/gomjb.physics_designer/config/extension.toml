@@ -1,5 +1,5 @@
 [package]
-version = "0.7.0"
+version = "0.8.0"
 title = "Physics Designer"
 description = "Python designer for Isaac Sim physics models: primitive body modeler with exact mass properties, move/align, snapping, anchors, joint creation, physics properties, mechanism templates, setup validation, result recording (joint forces, plots, CSV) and an exact constraint-based multibody solver (Exudyn) - all undoable."
 category = "Simulation"
@@ -16,7 +16,8 @@ changelog = "docs/CHANGELOG.md"
 "omni.kit.menu.utils" = {}
 "isaacsim.gui.components" = {}                 # XYPlot
 "isaacsim.core.experimental.prims" = {}        # Articulation (analysis recorder)
-"isaacsim.core.simulation_manager" = {}        # physics step callbacks (recording, motions)
+"isaacsim.core.simulation_manager" = {}        # physics step callbacks (recording, motions), tensor views
+"omni.warp.core" = {}                          # kinematic mechanisms: frames of all copies in one kernel
 "omni.timeline" = {}                           # motions: back to TIME = 0 on Stop
 "omni.kit.viewport.utility" = {}               # joint picking: the active viewport
 "omni.ui.scene" = {}                           # joint picking: click gesture over the viewport

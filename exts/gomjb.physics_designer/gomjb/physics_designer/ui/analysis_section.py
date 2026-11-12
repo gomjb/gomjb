@@ -10,7 +10,7 @@ from typing import Dict, List, Optional, Tuple
 
 import omni.ui as ui
 
-from ..core import physics as ph
+from ..core import kinematic_mode as km
 from ..core import units as un
 from .widgets import ComboInput, FloatInput, IntInput, StringInput, button_row, hint, section
 
@@ -58,6 +58,22 @@ class AnalysisSection:
                                          "solver any prim that holds the bodies")
                 button_row([("Use selection", self.use_selection), ("Start recording", self.start),
                             ("Stop", self.stop)])
+                hint("Kinematics: how the mechanism moves when simulated. physics - PhysX solves its joints and "
+                     "drives. table / cosim - the exact solver moves its bodies (kinematic, loops closed exactly) "
+                     "along the joint motions and PhysX simulates only what touches them: a motion table is "
+                     "solved along the drives' stroke at Play (one stroke, range = joint limits), co-simulation "
+                     "solves every physics step (any motions).")
+                self._kin_mode = ComboInput(
+                    "Kinematics", km.MODES,
+                    tooltip="physics: joints simulated by PhysX.\n"
+                            "table: motion table from the exact solver, interpolated (GPU-friendly, one stroke).\n"
+                            "cosim: exact solver every physics step (CPU, any motions).")
+                self._kin_tol = self._w.units.float("Table tolerance", km.TABLE_TOLERANCE, "length",
+                                                    "Largest interpolation error of the motion table: points are "
+                                                    "added where the kinematics bends until it is met")
+                button_row([("Apply kinematics", self.apply_kinematics,
+                             "Store the mode on the mechanism root: bodies kinematic, inner joints disabled "
+                             "(undoable; 'physics' restores the model)")])
                 hint("Exact solver (Exudyn): every joint an exact constraint, loop closures included; "
                      "driven axes are prescribed motions whose multipliers are the actuator forces. "
                      "Solve static equilibrium at the drive targets, or sweep drives along a stroke.")
@@ -105,16 +121,49 @@ class AnalysisSection:
     # -- recording ---------------------------------------------------------------------
     def use_selection(self):
         for prim in self._w._selection():
-            root = ph.articulation_root_of(prim)
+            root = km.mechanism_root_of(prim)
             if root is not None:
                 self._root.model.set_value(str(root.GetPath()))
-                self._w._status(f"Analysis target: {root.GetPath()}")
+                self._w._status(f"Analysis target: {root.GetPath()} (kinematics: {km.get_mode(root)})")
                 return
-        self._w._status("Analysis: select a prim inside an articulation.", error=True)
+        self._w._status("Analysis: select a prim inside a mechanism (articulation).", error=True)
+
+    def apply_kinematics(self):
+        path = self._mechanism()
+        if path is None:
+            return
+        mode = self._kin_mode.value
+        tol = self._kin_tol.si
+        if mode in km.KINEMATIC_MODES:  # check what the exact solver needs before touching the model
+            try:
+                from ..core import kinematics as kn  # needs exudyn ([python.pipapi])
+
+                model = kn.kinematic_model(self._w._stage(), path)
+                if not model.motion_profiles():
+                    raise ValueError("no driven joint has a motion (Include Motion): nothing would move")
+            except Exception as exc:
+                self._w._status(f"Kinematics: {exc}", error=True)
+                return
+        from ..commands import run_edit
+
+        try:
+            run_edit(lambda s: km.set_mode(s.GetPrimAtPath(path), mode, tol if mode == "table" else None),
+                     modify_paths=km.edit_paths(self._w._stage().GetPrimAtPath(path)),
+                     label=f"Physics Designer: kinematics {mode}")
+        except Exception as exc:
+            self._w._status(f"Kinematics: {exc}", error=True)
+            return
+        what = {"physics": "PhysX simulates its joints", "table": "motion table built at Play",
+                "cosim": "exact solver every physics step"}[mode]
+        self._w._status(f"{path}: kinematics '{mode}' - {what}.")
 
     def start(self):
         path = self._mechanism()
         if path is None:
+            return
+        if km.get_mode(self._w._stage().GetPrimAtPath(path)) != "physics":
+            self._w._status("Recording: a kinematic mechanism is no articulation - its motion is the exact "
+                            "solver's (Exact solver below).", error=True)
             return
         from ..recording import ArticulationRecorder  # Isaac Sim runtime only
 

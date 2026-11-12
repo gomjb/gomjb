@@ -6,9 +6,14 @@ does: rigid bodies with their explicit mass properties, every joint an exact con
 a prescribed motion ("motion" in RecurDyn) whose multiplier is the exact actuator force.
 
 * Bodies: prims with RigidBodyAPI (+ MassAPI mass / centerOfMass / diagonalInertia, as the
-  Modeler authors them). Kinematic bodies and non-rigid joint targets are ground.
+  Modeler authors them). Kinematic bodies and non-rigid joint targets are ground. A mechanism
+  in a kinematic mode (:mod:`kinematic_mode`) is read as designed: its bodies and joints count
+  as dynamic and enabled.
 * Joints: fixed / revolute / prismatic / spherical / D6 (locked DOFs) as Exudyn generic joints,
-  built from the joint's world frame (body0 side) at the authored pose.
+  built from the joint's world frame (body0 side) at the authored pose. Other joint types
+  (distance, PhysX gear / rack and pinion) and mimic joints are rejected, not skipped.
+* Bushings (:mod:`bushing`) are spring-dampers, or with ``rigid_bushings`` the exact joints they
+  replace (constraints on their stiff axes) — what the mechanism's kinematics needs.
 * Drives with stiffness > 0 become prescribed coordinates at their target; damping-only drives
   and joint limits are not part of the analysis (listed in :attr:`MbdModel.notes`).
 * Redundant constraints (e.g. revolute joints closing planar loops, or two sides of a scissor
@@ -22,6 +27,8 @@ Inputs and outputs are SI (m, deg, N, N*m); the model itself runs in stage units
 Channel names match :mod:`recording`: ``pos:<joint>`` / ``force:<joint>`` for driven and free
 joint axes, ``joint_force:<joint>:x|y|z`` and ``joint_torque:...`` for full reactions in the
 joint frame. Forces are those the joint applies to its body1 (same sign as PhysX).
+:meth:`MbdModel.body_poses` gives every body's world frame at the solution — with the drives
+prescribed this is the mechanism's kinematics (position analysis), loops closed exactly.
 """
 from __future__ import annotations
 
@@ -33,6 +40,7 @@ import numpy as np
 from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
 from . import joints as jt
+from . import kinematic_mode as km
 from . import math_utils as mu
 from . import motion as mo
 from . import transform as tf
@@ -40,6 +48,7 @@ from .results import Recording
 from .stage_utils import si_factors
 
 AXIS_NAMES = ("transX", "transY", "transZ", "rotX", "rotY", "rotZ")
+MIMIC_APIS = ("PhysxMimicJointAPI", "NewtonMimicAPI")  # joint couplings the exact solver does not model
 TORQUE_SIGN = np.array([1.0, -1.0, -1.0])  # Exudyn TorqueLocal -> torque applied to body1 (see values())
 
 
@@ -70,10 +79,13 @@ class MbdModel:
     * ``"bushings"`` — every joint that is not driven becomes a stiff 6-DOF bushing (zero stiffness
       on its free axes): the load split then follows stiffness like the real structure, which is the
       fix Adams / Altair recommend for asymmetric results. ``bushing_stiffness`` = (N/m, N*m/rad).
+
+    ``rigid_bushings``: joints the designer turned into bushings become the exact joints they
+    replace (loop closures, released first when redundant) instead of spring-dampers.
     """
 
     def __init__(self, stage: Usd.Stage, root_path: str, redundancy: str = "release",
-                 bushing_stiffness: Tuple[float, float] = (1.0e8, 1.0e7)):
+                 bushing_stiffness: Tuple[float, float] = (1.0e8, 1.0e7), rigid_bushings: bool = False):
         import exudyn as exu
         from exudyn.utilities import MarkerBodyRigid, ObjectGround, ObjectJointGeneric, RigidBodyInertia
 
@@ -83,6 +95,7 @@ class MbdModel:
         self.stage = stage
         self.root_path = str(root_path)
         self.redundancy = redundancy
+        self.rigid_bushings = rigid_bushings
         self.si = si_factors(stage)
         # SI stiffness -> stage units (force / length, torque / rad)
         self._k = (bushing_stiffness[0] * self.si["length"] / self.si["force"],
@@ -138,14 +151,26 @@ class MbdModel:
     def _add_joint(self, prim: Usd.Prim, MarkerBodyRigid, ObjectJointGeneric) -> None:
         j = UsdPhysics.Joint(prim)
         name = prim.GetName()
-        if j.GetJointEnabledAttr().Get() is False:
+        if not km.designed_enabled(prim):
             self.notes.setdefault("disabled joints skipped", []).append(name)
             return
+        if any(s.split(":")[0] in MIMIC_APIS for s in _api_schemas(prim)):
+            raise ValueError(f"{prim.GetPath()}: mimic joints are not supported by the exact solver")
         b0, b1 = jt.joint_bodies(prim)
-        (p0, r0), _ = jt.joint_world_frames(prim)
-        frame = mu.make_transform(p0, r0)
-        if jt.is_bushing(prim):
+        (p0, r0), (p1, r1) = jt.joint_world_frames(prim)
+        # the frame on a body of the model: a joint to the ground anchors the mechanism where it stands,
+        # also when its ground-side frame is stale (a copy moved or cloned after the joint was made)
+        side0 = b0 is not None and str(b0.GetPath()) in self.bodies
+        frame = mu.make_transform(p0, r0) if side0 or b1 is None else mu.make_transform(p1, r1)
+        if jt.is_bushing(prim) and not self.rigid_bushings:
             self._add_usd_bushing(prim, name, b0, b1, frame, MarkerBodyRigid)
+            return
+        if jt.is_bushing(prim):  # the exact joint it replaces: constraints on its stiff axes
+            k, _ = _bushing_gains(prim)
+            constrained = [1 if k[i] > 0 else 0 for i in range(6)]
+            self.notes.setdefault("bushings solved as the joints they replace", []).append(name)
+            self._add_generic(prim, name, b0, b1, frame, constrained, [i for i in range(6) if not constrained[i]],
+                              {}, True, MarkerBodyRigid, ObjectJointGeneric)
             return
         constrained, free = _constrained_axes(prim)
         drives = {}
@@ -159,6 +184,11 @@ class MbdModel:
                 self.notes.setdefault("damping-only drives ignored", []).append(name)
         if _has_limits(prim):
             self.notes.setdefault("joint limits not enforced", []).append(name)
+        self._add_generic(prim, name, b0, b1, frame, constrained, free, drives,
+                          bool(j.GetExcludeFromArticulationAttr().Get()), MarkerBodyRigid, ObjectJointGeneric)
+
+    def _markers(self, b0, b1, frame: Gf.Matrix4d, MarkerBodyRigid):
+        """(marker numbers, joint-frame rotations in each body, Exudyn bodies) of a joint frame."""
         markers, rotations, indices = [], [], []
         for body in (b0, b1):
             index, body_frame = self._side(body)
@@ -167,8 +197,13 @@ class MbdModel:
                                                               localPosition=list(local.ExtractTranslation()))))
             rotations.append(_rot_matrix(mu.rotation_of(local)))
             indices.append(index)
+        return markers, rotations, indices
+
+    def _add_generic(self, prim: Usd.Prim, name: str, b0, b1, frame: Gf.Matrix4d, constrained: List[int],
+                     free: List[int], drives: Dict[int, float], loop: bool, MarkerBodyRigid, ObjectJointGeneric) -> None:
+        markers, rotations, indices = self._markers(b0, b1, frame, MarkerBodyRigid)
         mj = MbdJoint(name, str(prim.GetPath()), prim.GetTypeName(), -1, list(constrained),
-                      [a for a in free if a not in drives], drives, bool(j.GetExcludeFromArticulationAttr().Get()),
+                      [a for a in free if a not in drives], drives, loop,
                       rotations[0], -1 if indices[0] == self._ground else int(indices[0]))
         if self.redundancy == "bushings" and not drives:
             from exudyn.utilities import ObjectConnectorRigidBodySpringDamper
@@ -196,23 +231,9 @@ class MbdModel:
         becomes a spring-damper here, so both solvers see the same soft connection."""
         from exudyn.utilities import ObjectConnectorRigidBodySpringDamper
 
-        k, c = np.zeros(6), np.zeros(6)
-        for i, dof in enumerate(AXIS_NAMES):
-            if prim.HasAPI(UsdPhysics.DriveAPI, dof):
-                api = UsdPhysics.DriveAPI(prim, dof)
-                s_, d_ = float(api.GetStiffnessAttr().Get() or 0.0), float(api.GetDampingAttr().Get() or 0.0)
-                if i >= 3:  # PhysX angular drives are per degree; Exudyn works per radian
-                    s_, d_ = math.degrees(s_), math.degrees(d_)
-                k[i], c[i] = s_, d_
+        k, c = _bushing_gains(prim)
         constrained = [1 if k[i] > 0 else 0 for i in range(6)]
-        markers, rotations, indices = [], [], []
-        for body in (b0, b1):
-            index, body_frame = self._side(body)
-            local = frame * body_frame.GetInverse()
-            markers.append(self.mbs.AddMarker(MarkerBodyRigid(bodyNumber=index,
-                                                              localPosition=list(local.ExtractTranslation()))))
-            rotations.append(_rot_matrix(mu.rotation_of(local)))
-            indices.append(index)
+        markers, rotations, indices = self._markers(b0, b1, frame, MarkerBodyRigid)
         mj = MbdJoint(name, str(prim.GetPath()), "Bushing", -1, constrained,
                       [i for i in range(6) if not constrained[i]], {}, True,
                       rotations[0], -1 if indices[0] == self._ground else int(indices[0]), bushing=True)
@@ -302,7 +323,10 @@ class MbdModel:
     def _static_step(self) -> None:
         exu = self._exu
         mbs = self.mbs
-        mbs.SolveStatic(self._settings())
+        if not mbs.SolveStatic(self._settings()):
+            targets = ", ".join(f"{n} = {self.drive_value(n):.6g} {self.drive_unit(n)}" for n in self.drive_names)
+            raise RuntimeError(f"static solution did not converge at {targets} (beyond the mechanism's range, "
+                               "or a step too large for the continuation)")
         current = mbs.systemData.GetODE2Coordinates(exu.ConfigurationType.Current)
         mbs.systemData.SetODE2Coordinates(current, exu.ConfigurationType.Initial)  # continuation
         self._last_target = {n: self.drive_value(n) for n in self.drive_names}
@@ -322,15 +346,29 @@ class MbdModel:
             raise ValueError("drives swept together must all be linear or all angular")
         rec = self._recording(f"{self.root_path.rsplit('/', 1)[-1]}_static")
         rec.x_name, rec.x_unit = ", ".join(drives), units.pop()
-        starts = {d: self.drive_value(d) for d in drives}
         for v in values_si:
-            for k in range(1, substeps + 1):
-                for d in drives:
-                    self.set_drive(d, starts[d] + (v - starts[d]) * k / substeps)
-                self._static_step()
-            starts = dict.fromkeys(drives, v)
+            self.solve_position(dict.fromkeys(drives, v), substeps)
             rec.add_sample(v, self.values())
         return rec
+
+    def solve_position(self, values_si: Dict[str, float], substeps: int = 1) -> None:
+        """Move the drives in ``values_si`` (m or deg) to these targets and solve; other drives
+        hold. The solution follows from the current one through ``substeps`` intermediate
+        configurations (continuation). With every DOF driven this is the position analysis."""
+        starts = {d: self.drive_value(d) for d in values_si}
+        for k in range(1, substeps + 1):
+            for d, v in values_si.items():
+                self.set_drive(d, starts[d] + (v - starts[d]) * k / substeps)
+            self._static_step()
+
+    def solution(self) -> np.ndarray:
+        """The current configuration (Exudyn ODE2 coordinates), to restart from (:meth:`restore`)."""
+        return np.array(self.mbs.systemData.GetODE2Coordinates(self._exu.ConfigurationType.Current))
+
+    def restore(self, coordinates: np.ndarray) -> None:
+        """Make a configuration from :meth:`solution` current and the next solve's starting point."""
+        for cfg in (self._exu.ConfigurationType.Initial, self._exu.ConfigurationType.Current):
+            self.mbs.systemData.SetODE2Coordinates(list(coordinates), cfg)
 
     def motion_profiles(self) -> Dict[str, Callable[[float], float]]:
         """Joint name -> displacement f(t) [m or deg] of every driven joint that carries a motion."""
@@ -426,6 +464,21 @@ class MbdModel:
                     out[f"force:{n}"] = float(force[axis])
         return out
 
+    def body_poses(self) -> Dict[str, Tuple[Tuple[float, float, float], Tuple[float, float, float, float]]]:
+        """World pose of every body at the current solution: body path relative to the mechanism
+        root -> (position [m], orientation quaternion (w, x, y, z)). The pose is the body prim's own
+        frame (its origin, not its centre of mass), which is what a kinematic target is set to."""
+        exu = self._exu
+        out = {}
+        for path, index in self.bodies.items():
+            p = self.mbs.GetObjectOutputBody(index, exu.OutputVariableType.Position, localPosition=[0.0, 0.0, 0.0])
+            a = self.mbs.GetObjectOutputBody(index, exu.OutputVariableType.RotationMatrix,
+                                             localPosition=[0.0, 0.0, 0.0])
+            q = _gf_rotation(np.asarray(a).reshape(3, 3)).GetQuat()
+            out[path[len(self.root_path) + 1:]] = (tuple(float(c) * self.si["length"] for c in p),
+                                                   (q.GetReal(), *q.GetImaginary()))
+        return out
+
     def report(self) -> str:
         bushings = [n for n, m in self.joints.items() if m.bushing]
         lines = [f"bodies {len(self.bodies)}, joints {len(self.joints)}, drives: {', '.join(self.drive_names) or 'none'}"]
@@ -470,10 +523,26 @@ def _exudyn_offset(mbs, mj: "MbdJoint", j0_values) -> List[float]:
 
 
 def _is_dynamic_body(prim: Usd.Prim) -> bool:
-    if not prim.HasAPI(UsdPhysics.RigidBodyAPI):
-        return False
-    api = UsdPhysics.RigidBodyAPI(prim)
-    return api.GetRigidBodyEnabledAttr().Get() is not False and not api.GetKinematicEnabledAttr().Get()
+    return km.designed_dynamic(prim)
+
+
+def _api_schemas(prim: Usd.Prim) -> List[str]:
+    """Applied API schema names as authored, registered with this USD build or not."""
+    op = prim.GetMetadata("apiSchemas")
+    return list(op.ApplyOperations([])) if op else []
+
+
+def _bushing_gains(prim: Usd.Prim) -> Tuple[np.ndarray, np.ndarray]:
+    """Per-axis (stiffness, damping) of a designer bushing, angular ones per radian."""
+    k, c = np.zeros(6), np.zeros(6)
+    for i, dof in enumerate(AXIS_NAMES):
+        if prim.HasAPI(UsdPhysics.DriveAPI, dof):
+            api = UsdPhysics.DriveAPI(prim, dof)
+            s_, d_ = float(api.GetStiffnessAttr().Get() or 0.0), float(api.GetDampingAttr().Get() or 0.0)
+            if i >= 3:  # PhysX angular drives are per degree; Exudyn works per radian
+                s_, d_ = math.degrees(s_), math.degrees(d_)
+            k[i], c[i] = s_, d_
+    return k, c
 
 
 def _gravity(stage: Usd.Stage) -> Gf.Vec3d:
@@ -511,6 +580,11 @@ def _rot_matrix(rot: Gf.Rotation) -> np.ndarray:
     return np.array([[m[c][r] for c in range(3)] for r in range(3)])  # Gf is row-vector: transpose
 
 
+def _gf_rotation(a: np.ndarray) -> Gf.Rotation:
+    """Inverse of :func:`_rot_matrix`: an Exudyn rotation matrix (local -> global) as a Gf rotation."""
+    return Gf.Matrix3d(*a.T.flatten().tolist()).ExtractRotation()
+
+
 def _constrained_axes(prim: Usd.Prim) -> Tuple[List[int], List[int]]:
     """(constrained flags, free single-DOF axes) in the joint frame."""
     if prim.IsA(UsdPhysics.FixedJoint):
@@ -524,8 +598,8 @@ def _constrained_axes(prim: Usd.Prim) -> Tuple[List[int], List[int]]:
         return flags, [free]
     if prim.IsA(UsdPhysics.SphericalJoint):
         return [1, 1, 1, 0, 0, 0], []
-    if prim.IsA(UsdPhysics.DistanceJoint):
-        raise ValueError(f"{prim.GetPath()}: distance joints are not supported by the exact solver yet")
+    if prim.GetTypeName() != "PhysicsJoint":  # distance, PhysX gear / rack and pinion, ...
+        raise ValueError(f"{prim.GetPath()}: {prim.GetTypeName()} joints are not supported by the exact solver")
     flags = [0] * 6  # D6: locked DOFs only
     for i, dof in enumerate(AXIS_NAMES):
         if prim.HasAPI(UsdPhysics.LimitAPI, dof):

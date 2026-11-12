@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.8.0] - 2026-11-12
+### Added
+- Kinematic mechanisms (`core.kinematic_mode`): a mechanism's *Kinematics* is `physics` (PhysX
+  simulates its joints, as before), `table` or `cosim` — the exact solver moves its bodies as
+  kinematic bodies and PhysX simulates only what touches them (Process Simulate's split of device
+  kinematics and physics). Switching makes the bodies kinematic, disables the joints inside the
+  mechanism and removes its articulation root; every change is marked and `physics` restores the
+  model exactly. Analysis section: *Kinematics*, *Table tolerance*, *Apply kinematics* (undoable).
+- `core.kinematics`: motion table — position analysis along the drives' stroke (their joint
+  limits), refined where the kinematics bends until interpolation is within a tolerance (default
+  0.1 mm, rotation error weighted by the mechanism's radius) — and co-simulation — position
+  analysis at every physics step, any number of independent motions.
+- `kinematic_driver`: one Warp kernel per step for all copies of a mechanism; CPU pipeline through
+  kinematic targets, GPU pipeline through pose + centre-of-mass velocity (PhysX 110.3 has no GPU
+  kinematic targets). The motion runtime groups copies of a mechanism (cloned environments,
+  duplicates — equal root-relative bodies and joints) under one table and one driver.
+- `MbdModel`: `body_poses()`, `solve_position()`, `solution()` / `restore()`; `rigid_bushings` solves
+  designer bushings as the joints they replace.
+
+### Changed
+- Exact solver: a joint to the ground is anchored on its body side, so a mechanism moved or cloned
+  after its world joint was made is solved where it stands; non-converging static solutions raise
+  instead of returning the last iterate; unsupported joint types (distance, PhysX gear / rack and
+  pinion) and mimic joints are rejected instead of silently skipped.
+- Validation skips disabled joints (not simulated).
+
 ## [0.7.0] - 2026-11-12
 ### Added
 - Bushings in place of joints (`core.bushing`, `joints.bushing_spec` / `convert_to_bushing`): a D6
