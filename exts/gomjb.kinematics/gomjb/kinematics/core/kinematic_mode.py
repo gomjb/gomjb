@@ -24,9 +24,9 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 from pxr import Gf, Sdf, Usd, UsdPhysics
 
-from . import joints as jt
-from . import math_utils as mu
-from . import transform as tf
+from gomjb.physics_designer.core import joints as jt
+from gomjb.physics_designer.core import math_utils as mu
+from gomjb.physics_designer.core import transform as tf
 
 MODES = ("physics", "table", "cosim")
 KINEMATIC_MODES = ("table", "cosim")

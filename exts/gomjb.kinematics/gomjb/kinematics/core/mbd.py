@@ -40,14 +40,15 @@ from typing import Callable, Dict, List, Optional, Sequence, Tuple
 import numpy as np
 from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
-from . import joints as jt
+from gomjb.physics_designer.core import joints as jt
+from gomjb.physics_designer.core import math_utils as mu
+from gomjb.physics_designer.core import motion as mo
+from gomjb.physics_designer.core import physics as ph
+from gomjb.physics_designer.core import transform as tf
+from gomjb.physics_designer.core.results import Recording
+from gomjb.physics_designer.core.stage_utils import si_factors
+
 from . import kinematic_mode as km
-from . import math_utils as mu
-from . import motion as mo
-from . import physics as ph
-from . import transform as tf
-from .results import Recording
-from .stage_utils import si_factors
 
 AXIS_NAMES = ("transX", "transY", "transZ", "rotX", "rotY", "rotZ")
 MIMIC_APIS = ("PhysxMimicJointAPI", "NewtonMimicAPI")  # joint couplings the exact solver does not model

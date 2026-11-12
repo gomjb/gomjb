@@ -19,16 +19,17 @@ from __future__ import annotations
 import time
 from typing import List, Optional, Sequence
 
-import carb.tokens
 import numpy as np
 import warp as wp
 from isaacsim.core.simulation_manager import SimulationManager
 from pxr import Usd, UsdPhysics
 
+from gomjb.physics_designer.core import math_utils as mu
+from gomjb.physics_designer.core import transform as tf
+
+from .cache import table_cache
 from .core import kinematic_mode as km
 from .core import kinematics as kn
-from .core import math_utils as mu
-from .core import transform as tf
 
 
 @wp.func
@@ -105,12 +106,6 @@ def _frame(m) -> wp.transform:
 def _com(body: Usd.Prim) -> List[float]:
     c = UsdPhysics.MassAPI(body).GetCenterOfMassAttr().Get() if body.HasAPI(UsdPhysics.MassAPI) else None
     return [0.0, 0.0, 0.0] if c is None or any(abs(v) == float("inf") for v in c) else [float(v) for v in c]
-
-
-def table_cache() -> str:
-    """Folder of the motion table cache, Kit's cache shared by all apps (like its shader cache):
-    a table built in the GUI serves a batch run of the same model, and the other way round."""
-    return carb.tokens.get_tokens_interface().resolve("${omni_cache}/gomjb.physics_designer/motion_tables")
 
 
 class KinematicDriver:

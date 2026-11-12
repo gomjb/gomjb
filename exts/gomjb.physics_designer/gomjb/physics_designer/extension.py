@@ -19,7 +19,7 @@ def get_window():
 
 
 def get_motion_runtime():
-    """The runtime that plays joint motions and kinematic mechanisms, or None."""
+    """The runtime that plays joint motions (and steps its participants, see motion_runtime), or None."""
     return _instance._motions if _instance is not None else None
 
 

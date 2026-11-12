@@ -147,11 +147,8 @@ def tf_pos(prim):
     return tf.world_position(prim)
 
 
-def test_motion_apply_load_remove_and_simulate(env):
-    """Include Motion on a joint from the window, then the exact solver's dynamic run follows it."""
-    pytest.importorskip("exudyn")
-    import math
-
+def test_motion_apply_load_remove(env):
+    """Include Motion on a joint from the window (the exact solver's run of it: gomjb.kinematics)."""
     win, ctx, commands = env
     from gomjb.physics_designer.core import joints as jt
     from gomjb.physics_designer.core import modeling as md
@@ -178,16 +175,6 @@ def test_motion_apply_load_remove_and_simulate(env):
     click("Load motion")
     assert j._motion_expr.value == "STEP(TIME, 0, 0, 0.5, 45)" and j._motion_on.value
 
-    a = win.analysis
-    a._root.model.set_value("/World/Arm")
-    a._end_time.value = 1.0
-    a._filter.model.set_value("Hinge")
-    click("Simulate")
-    assert "Simulated 1 s, 1 motion(s)." in status(win), status(win)
-    rec = a.recording
-    assert rec.x_name == "time" and abs(rec.channels["pos:Hinge"][-1]) == pytest.approx(45.0, abs=1e-6)
-    assert abs(rec.channels["force:Hinge"][-1]) == pytest.approx(2 * 9.81 * 0.5 * math.cos(math.radians(45)),
-                                                                  rel=1e-3)
     j._motion_on.model.set_value(False)
     click("Apply motion")
     assert mo.get_motion(joint) is None
@@ -365,74 +352,32 @@ def test_analysis_plot_summary_and_csv(env, tmp_path):
                                 "force:Hinge": 2.0, "link_force:Platform:x": 3.0,
                                 "link_force:Platform:y": 0.0, "link_force:Platform:z": 4.0})
     rec.units["force:Actuator_L"] = "N"
-    win.analysis._result = rec
-    win.analysis._filter.model.set_value("Actuator")
-    win.analysis.refresh_plot()
-    plot = win.analysis._plot  # the plot is rebuilt on every refresh
+    win.analysis.results.result = rec
+    win.analysis.results._filter.model.set_value("Actuator")
+    win.analysis.results.refresh()
+    plot = win.analysis.results._plot  # the plot is rebuilt on every refresh
     assert plot.legends == ["Actuator_L"] and plot.y_data[0][-1] == -1003.0
     assert plot.y_min < -1003.0 and plot.y_max > -1000.0 and (plot.x_min, plot.x_max) == (0.0, 3 / 60)
-    assert "Actuator_L: min -1003  max -1000  final -1003 N" in win.analysis._summary_model.as_string
-    from gomjb.physics_designer.ui.analysis_section import SERIES_COLORS
+    assert "Actuator_L: min -1003  max -1000  final -1003 N" in win.analysis.results._summary_model.as_string
+    from gomjb.physics_designer.ui.result_view import SERIES_COLORS
 
     assert plot.colors == [SERIES_COLORS[0]]
-    win.analysis._filter.model.set_value("")
-    win.analysis.refresh_plot()
-    plot = win.analysis._plot  # the plot is rebuilt on every refresh
+    win.analysis.results._filter.model.set_value("")
+    win.analysis.results.refresh()
+    plot = win.analysis.results._plot  # the plot is rebuilt on every refresh
     assert plot.legends == ["Actuator_L", "Hinge"] and plot.colors == SERIES_COLORS[:2]
-    win.analysis._filter.model.set_value("Hinge")
-    win.analysis.refresh_plot()
-    plot = win.analysis._plot  # the plot is rebuilt on every refresh
+    win.analysis.results._filter.model.set_value("Hinge")
+    win.analysis.results.refresh()
+    plot = win.analysis.results._plot  # the plot is rebuilt on every refresh
     assert plot.colors == [SERIES_COLORS[1]]  # the survivor keeps its color
-    _combo(win.analysis._kind, "Joint reaction |F|")
-    win.analysis._filter.model.set_value("")
-    win.analysis.refresh_plot()
-    plot = win.analysis._plot  # the plot is rebuilt on every refresh
+    _combo(win.analysis.results._kind, "Joint reaction |F|")
+    win.analysis.results._filter.model.set_value("")
+    win.analysis.results.refresh()
+    plot = win.analysis.results._plot  # the plot is rebuilt on every refresh
     assert plot.legends == ["Platform"] and plot.y_data[0][0] == pytest.approx(5.0)
-    win.analysis._csv.model.set_value(str(tmp_path / "out.csv"))
+    win.analysis.results._csv.model.set_value(str(tmp_path / "out.csv"))
     click("Export CSV")
     assert (tmp_path / "out.csv").read_text(encoding="utf-8").startswith("time [s],pos:Actuator_L")
-
-
-def test_exact_solver_sweep_and_bushings(env, tmp_path):
-    import math
-
-    win, ctx, _ = env
-    from gomjb.physics_designer.core import mechanisms as me
-    from gomjb.physics_designer.core import physics as ph
-
-    UsdGeom.SetStageMetersPerUnit(ctx.stage, 1.0)
-    ph.ensure_physics_scene(ctx.stage)
-    res = me.build_scissor_lift(ctx.stage, stages=1, sides=1, angle=30.0, loop_closure="rigid")
-    a = win.analysis
-    a._root.model.set_value(res["root"][0])
-    targets = [me.scissor_slider_offset(1.2, 30.0, deg) for deg in (40.0, 50.0)]
-    a._sweep_from.value, a._sweep_to.value = targets
-    a._sweep_points.model.set_value(2)
-    a._filter.model.set_value("Actuator")
-    click("Sweep drive")
-    assert "Swept Actuator over 2 points" in status(win)
-    plot = a._plot
-    assert plot.legends == ["Actuator"] and a.recording.x_label == "Actuator [m]"
-    # this stroke runs downwards (raising the lift); XYPlot only draws increasing x
-    assert targets[1] < targets[0] and plot.x_data[0] == sorted(targets)
-    assert plot.y_data[0] == a.recording.channels["force:Actuator"][::-1]
-    assert a._summary_model.as_string.startswith("Actuator: min")  # results first, report below
-    for deg, force in zip((40.0, 50.0), a.recording.channels["force:Actuator"]):
-        assert -force == pytest.approx(me.scissor_actuator_force(1.2, deg, 1, 20.0, 5.0, sides=1), rel=1e-6)
-    assert "redundancy handling: release" in a._summary_model.as_string
-    a._csv.model.set_value(str(tmp_path / "sweep.csv"))
-    click("Export CSV")
-    assert (tmp_path / "sweep.csv").read_text(encoding="utf-8").startswith("Actuator [m],")
-
-    _combo(a._redundancy, "bushings")
-    click("Solve static")
-    assert "solved" in status(win) and "as stiff bushings" in a._summary_model.as_string
-    _combo(a._kind, "Joint reaction |F|")
-    a._filter.model.set_value("BaseFixed")
-    a.refresh_plot()
-    weight = sum(md_mass(ctx.stage, p) for p in res["bodies"]) * 9.81
-    assert a._plot.y_data[0][0] == pytest.approx(weight, rel=1e-4)
-    assert math.isfinite(a._plot.y_max)
 
 
 def test_unit_system_mmks_everywhere(env, tmp_path):
@@ -483,25 +428,6 @@ def test_unit_system_mmks_everywhere(env, tmp_path):
     assert arm.unit_label.text == "mm" and arm.value == pytest.approx(1200.0)
     assert win._template_inputs["arm_mass"][1].unit_label.text == "kg"
 
-    # exact solver: From / To in mm, results in N and mm
-    ph.ensure_physics_scene(ctx.stage)
-    res = me.build_scissor_lift(ctx.stage, stages=1, sides=1, angle=30.0, loop_closure="rigid")
-    a = win.analysis
-    assert a._sweep_from.unit_label.text == "mm | deg"
-    a._root.model.set_value(res["root"][0])
-    targets = [me.scissor_slider_offset(1.2, 30.0, deg) for deg in (40.0, 50.0)]
-    a._sweep_from.value, a._sweep_to.value = (1000.0 * t for t in targets)
-    a._sweep_points.model.set_value(2)
-    a._filter.model.set_value("Actuator")
-    click("Sweep drive")
-    assert a.recording.x_unit == "m" and a.recording.time == pytest.approx(targets)  # the result stays SI
-    assert a._plot.x_data[0] == pytest.approx(sorted(1000.0 * t for t in targets))
-    for deg, force in zip((40.0, 50.0), a.recording.channels["force:Actuator"]):
-        assert -force == pytest.approx(me.scissor_actuator_force(1.2, deg, 1, 20.0, 5.0, sides=1), rel=1e-6)
-    a._csv.model.set_value(str(tmp_path / "mm.csv"))
-    click("Export CSV")
-    assert (tmp_path / "mm.csv").read_text(encoding="utf-8").startswith("Actuator [mm],")
-
     # back to MKS: the same physical values
     _combo(win._unit_combo, "MKS")
     assert win._move_step.value == pytest.approx(0.1) and win._abs_pos.value[0] == pytest.approx(0.1)
@@ -517,9 +443,3 @@ def test_unit_system_on_a_centimetre_stage(env):
     select(ctx, "/World/A")
     click("Z +")
     assert tf.world_position(ctx.stage.GetPrimAtPath("/World/A"))[2] == pytest.approx(10.0)
-
-
-def md_mass(stage, path):
-    from gomjb.physics_designer.core import modeling as md
-
-    return md.body_mass_properties(stage.GetPrimAtPath(path)).mass

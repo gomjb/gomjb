@@ -35,10 +35,11 @@ from typing import List, Tuple
 import numpy as np
 from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
+from gomjb.physics_designer.core import math_utils as mu
+from gomjb.physics_designer.core import motion as mo
+from gomjb.physics_designer.core import transform as tf
+
 from . import kinematic_mode as km
-from . import math_utils as mu
-from . import motion as mo
-from . import transform as tf
 from .mbd import MbdModel
 
 INITIAL_POINTS = 17  # even stroke points a table starts from before refining

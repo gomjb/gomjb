@@ -9,12 +9,12 @@ pytest.importorskip("exudyn")
 
 from pxr import Gf, UsdPhysics  # noqa: E402
 
-from gomjb.physics_designer.core import kinematic_mode as km  # noqa: E402
-from gomjb.physics_designer.core import kinematics as kn  # noqa: E402
+from gomjb.kinematics.core import kinematic_mode as km  # noqa: E402
+from gomjb.kinematics.core import kinematics as kn  # noqa: E402
 from gomjb.physics_designer.core import mechanisms as me  # noqa: E402
 from gomjb.physics_designer.core import motion as mo  # noqa: E402
 from gomjb.physics_designer.core import physics as ph  # noqa: E402
-from gomjb.physics_designer.core.mbd import MbdModel  # noqa: E402
+from gomjb.kinematics.core.mbd import MbdModel  # noqa: E402
 
 L, A0, STAGES = 1.2, 25.0, 3
 

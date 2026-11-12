@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.10.0] - 2026-11-12
+### Changed
+- The exact solver and kinematic mechanisms moved to their own extension, **gomjb.kinematics**
+  (Tools > Kinematics), which depends on this one: `core.mbd`, `core.kinematic_mode`,
+  `core.kinematics` and `kinematic_driver` are now `gomjb.kinematics.core.*` and
+  `gomjb.kinematics.driver`. This extension no longer needs Exudyn or Warp. Its window's Analysis
+  section records PhysX simulations only.
+- `motion_runtime` plays drive targets only. Other extensions take part in the same physics step
+  through `MotionRuntime.add_participant` (`skips` / `start` / `step` / `stop`), so this extension
+  knows nothing about them.
+- Plot, summary and CSV export moved into `ui.result_view.ResultView`, which both windows use.
+- Recording checks that the mechanism has an articulation root.
+
 ## [0.9.0] - 2026-11-12
 ### Added
 - Motion table cache (`kinematics.cached_table`, `save_table` / `load_table`): tables are stored in

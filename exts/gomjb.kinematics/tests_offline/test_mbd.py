@@ -5,15 +5,17 @@ import pytest
 
 pytest.importorskip("exudyn")
 
-from pxr import Gf, Usd, UsdGeom  # noqa: E402
+from pxr import Gf, Usd, UsdGeom, UsdPhysics  # noqa: E402
 
+from gomjb.physics_designer.core import bushing as bu  # noqa: E402
 from gomjb.physics_designer.core import joints as jt  # noqa: E402
 from gomjb.physics_designer.core import math_utils as mu  # noqa: E402
 from gomjb.physics_designer.core import mechanisms as me  # noqa: E402
 from gomjb.physics_designer.core import modeling as md  # noqa: E402
+from gomjb.physics_designer.core import motion as mo  # noqa: E402
 from gomjb.physics_designer.core import physics as ph  # noqa: E402
 from gomjb.physics_designer.core import transform as tf  # noqa: E402
-from gomjb.physics_designer.core.mbd import MbdModel  # noqa: E402
+from gomjb.kinematics.core.mbd import MbdModel  # noqa: E402
 
 G = 9.81
 
@@ -156,7 +158,7 @@ def test_two_sided_scissor_total_and_redundancy_report(scene):
     total = -(v["force:Actuator_L"] + v["force:Actuator_R"])
     theta = math.degrees(math.asin(2.2 / 3.6))
     assert total == pytest.approx(2 * me.scissor_actuator_force(1.2, theta, 3, 20.0, 5.0, sides=2), rel=1e-6)
-    from gomjb.physics_designer.core.mbd import AXIS_NAMES
+    from gomjb.kinematics.core.mbd import AXIS_NAMES
 
     for joint, axis in model.released:  # released equations carry no reaction (as in MotionSolve)
         a = AXIS_NAMES.index(axis)
@@ -276,3 +278,84 @@ def test_compound_pendulum_period(scene):
     crossings = [rec.time[k] for k in range(1, len(angle)) if angle[k - 1] < 0 <= angle[k] or angle[k - 1] > 0 >= angle[k]]
     period = 2 * (crossings[-1] - crossings[0]) / (len(crossings) - 1)
     assert period == pytest.approx(expected, rel=2e-3)
+
+
+# -- designer bushings and joint motions in the exact solver (moved from the modeler's tests) --
+def test_bushing_error_scales_with_its_compliance(stage):
+    """The force error of a soft loop closure is its deflection: 10x stiffer, 10x smaller."""
+    pytest.importorskip("exudyn")
+    from pxr import Usd
+
+    from gomjb.kinematics.core.mbd import MbdModel
+
+    errors = []
+    for defl in (1e-4, 1e-5):
+        s = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(s, UsdGeom.Tokens.z)
+        s.SetDefaultPrim(UsdGeom.Xform.Define(s, "/World").GetPrim())
+        ph.ensure_physics_scene(s)
+        res = me.build_scissor_lift(s, stages=3, sides=1, angle=30.0, loop_closure="rigid")
+        for p in res["joints"]:
+            if UsdPhysics.Joint(s.GetPrimAtPath(p)).GetExcludeFromArticulationAttr().Get():
+                bu.convert(s.GetPrimAtPath(p), deflection=defl)
+        model = MbdModel(s, res["root"][0])
+        model.set_drive("Actuator", me.scissor_slider_offset(1.2, 30.0, 45.0))
+        force = -model.solve_static(steps=5)["force:Actuator"]
+        errors.append(force / me.scissor_actuator_force(1.2, 45.0, 3, 20.0, 5.0, sides=1) - 1)
+    assert 0 < errors[0] < 1e-3
+    assert errors[1] == pytest.approx(errors[0] / 10, rel=0.05)
+
+
+@pytest.mark.parametrize("sides", [1, 2])
+def test_exact_solver_reads_usd_bushings(stage, sides):
+    """The exact solver maps a designer bushing to the same spring-damper: no redundant
+    constraints left and the total actuator force within the bushing deflection of the analytic
+    answer. (The left / right split is not symmetric: only the loop closures are soft while the
+    articulation-tree pins stay rigid, and the two sides close different loops.)"""
+    pytest.importorskip("exudyn")
+    from gomjb.kinematics.core.mbd import MbdModel
+
+    ph.ensure_physics_scene(stage)
+    res = me.build_scissor_lift(stage, stages=3, sides=sides, angle=30.0)
+    model = MbdModel(stage, res["root"][0])
+    assert model.has_bushings and model.redundant == 0 and not model.released
+    assert "bushing joints" in model.report()
+    for deg in (40.0, 55.0):
+        target = me.scissor_slider_offset(1.2, 30.0, deg)
+        for d in model.drive_names:
+            model.set_drive(d, target)
+        v = model.solve_static(steps=5)
+        forces = [-v[f"force:{d}"] for d in model.drive_names]
+        expected = me.scissor_actuator_force(1.2, deg, 3, 20.0, 5.0, sides=sides)
+        assert sum(forces) == pytest.approx(expected * len(forces), rel=1e-3)
+        assert all(f > 0 for f in forces)  # both actuators push toward the fixed pins
+
+
+def _hinge(stage):
+    """A 2 kg, 1 m link hinged to the world at its left end, horizontal along +X; hinge axis Y."""
+    ph.ensure_physics_scene(stage)
+    root = UsdGeom.Xform.Define(stage, "/World/Arm").GetPrim()
+    ph.apply_articulation_root(root)
+    link = md.create_body(stage, "/World/Arm/Link", "link", (1.0, 0.05, 0.02), mass=2.0)
+    tf.set_world_position(link, (0.5, 0, 0))
+    return jt.create_joint_at(stage, jt.JointSpec("revolute", name="Hinge", axis="Z"), None, link,
+                              location="custom", custom_position=(0, 0, 0), world_axis="Y",
+                              parent_path="/World/Arm/Joints")
+
+
+def test_exact_solver_follows_the_motion(stage):
+    """The link is turned 0 -> 60 deg in 1 s and held: the angle is exact and, at rest, the hinge
+    torque is the static gravity torque m*g*L/2*cos(angle)."""
+    pytest.importorskip("exudyn")
+    from gomjb.kinematics.core.mbd import MbdModel
+
+    joint = _hinge(stage)
+    mo.set_motion(joint, mo.Motion("displacement", "STEP(TIME, 0, 0, 1, 60)"))
+    model = MbdModel(stage, "/World/Arm")
+    assert list(model.motion_profiles()) == ["Hinge"]
+    rec = model.simulate(end_time=2.0, step=1e-3, sample=0.05)
+    angle = rec.channels["pos:Hinge"]
+    assert abs(angle[-1]) == pytest.approx(60.0, abs=1e-6)
+    assert abs(rec.at(0.5, "pos:Hinge")) == pytest.approx(30.0, abs=0.2)  # STEP midpoint at t = 0.5
+    torque = abs(rec.channels["force:Hinge"][-1])
+    assert torque == pytest.approx(2.0 * 9.81 * 0.5 * math.cos(math.radians(60.0)), rel=1e-3)

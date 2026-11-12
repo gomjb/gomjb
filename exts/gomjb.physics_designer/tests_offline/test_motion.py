@@ -1,4 +1,4 @@
-"""Joint motions (RecurDyn "Include Motion"): expressions, profiles, storage, exact solver."""
+"""Joint motions (RecurDyn "Include Motion"): expressions, profiles, storage (the exact solver's run of them: gomjb.kinematics)."""
 import math
 
 import pytest
@@ -63,24 +63,6 @@ def test_set_get_clear_motion_with_a_tracking_drive(hinge):
     fixed = jt.create_joint(stage, jt.JointSpec("fixed"), None, link, (0, 0, 0))
     with pytest.raises(ValueError, match="revolute and translational"):
         mo.set_motion(fixed, mo.Motion())
-
-
-def test_exact_solver_follows_the_motion(hinge):
-    """The link is turned 0 -> 60 deg in 1 s and held: the angle is exact and, at rest, the hinge
-    torque is the static gravity torque m*g*L/2*cos(angle)."""
-    pytest.importorskip("exudyn")
-    from gomjb.physics_designer.core.mbd import MbdModel
-
-    stage, link, joint = hinge
-    mo.set_motion(joint, mo.Motion("displacement", "STEP(TIME, 0, 0, 1, 60)"))
-    model = MbdModel(stage, "/World/Arm")
-    assert list(model.motion_profiles()) == ["Hinge"]
-    rec = model.simulate(end_time=2.0, step=1e-3, sample=0.05)
-    angle = rec.channels["pos:Hinge"]
-    assert abs(angle[-1]) == pytest.approx(60.0, abs=1e-6)
-    assert abs(rec.at(0.5, "pos:Hinge")) == pytest.approx(30.0, abs=0.2)  # STEP midpoint at t = 0.5
-    torque = abs(rec.channels["force:Hinge"][-1])
-    assert torque == pytest.approx(2.0 * 9.81 * 0.5 * math.cos(math.radians(60.0)), rel=1e-3)
 
 
 def test_translational_motion_in_millimetres(stage):
