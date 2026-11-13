@@ -1,0 +1,31 @@
+[package]
+version = "0.1.0"
+title = "Kinematics"
+description = "Kinematics tool for Isaac Sim on models made with the Physics Designer: an exact constraint-based multibody solver (Exudyn) - static equilibrium, drive sweeps, dynamic analysis, redundant constraints - and kinematic mechanisms that follow their joint motions in the simulation through a motion table or a co-simulation with the exact solver, one Warp kernel for any number of cloned copies."
+category = "Simulation"
+keywords = ["isaac", "kinematics", "multibody", "exudyn", "mechanism", "motion table", "co-simulation"]
+authors = ["gomjb"]
+readme = "docs/README.md"
+changelog = "docs/CHANGELOG.md"
+
+[dependencies]
+"gomjb.physics_designer" = {}                  # the model (core), undo commands, motion runtime, result view
+"omni.ui" = {}
+"omni.usd" = {}
+"omni.kit.menu.utils" = {}
+"isaacsim.core.simulation_manager" = {}        # tensor views of the kinematic bodies
+"omni.warp.core" = {}                          # frames of all copies of a mechanism in one kernel
+
+[[python.module]]
+name = "gomjb.kinematics"
+
+[python.pipapi]
+# exact multibody solver (core/mbd.py); its only runtime dependency, numpy, ships with Kit
+requirements = ["exudyn==1.13.6"]
+modules = ["exudyn"]
+extra_args = ["--no-deps"]
+use_online_index = true
+
+[[test]]
+# omni.kit.test already comes in through the isaacsim.core dependencies
+args =["--/app/window/dpiScaleOverride=1.0", "--no-window"]

@@ -1,0 +1,413 @@
+# Physics Designer (`gomjb.physics_designer`)
+
+Isaac Sim에서 물리 모델을 만들 때 필요한 반복 작업(객체 이동·정렬, 스냅, 조립 기준점,
+조인트 생성, 물리 속성 부여, 설정 검증)을 하나의 창에서 처리하는 Python 기반 디자이너
+extension입니다. 모든 작업은 **Ctrl+Z로 되돌릴 수 있고**, 같은 기능을 스크립트에서도 그대로 쓸 수 있습니다.
+
+> A Python designer extension for NVIDIA Isaac Sim that makes physics modelling easy:
+> move/align, snapping, anchors, joint creation, physics properties, mechanism templates and
+> setup validation — every operation undoable and scriptable.
+
+---
+
+## 1. 설치 / 실행
+
+**Isaac Sim의 `extsUser` 폴더에 연결 (권장)**
+
+Isaac Sim은 설치 폴더의 `extsUser`를 모든 앱에서 확장 경로로 읽습니다. 저장소를 복사하지 말고
+**디렉터리 정션**으로 연결하면 원본은 git 저장소 하나로 유지되고, 저장소를 고치면 Isaac Sim에 바로 반영됩니다
+(관리자 권한 불필요).
+
+```bat
+set ISAAC=E:\isaac-sim-standalone-6.1.0-windows-x86_64
+mklink /J "%ISAAC%\extsUser\gomjb.physics_designer" "<repo>\exts\gomjb.physics_designer"
+```
+
+그다음 Isaac Sim에서 `Window > Extensions` → **Physics Designer** → *Enable* (원하면 *Autoload* 체크),
+메뉴 `Tools > Physics Designer` 로 창을 엽니다. 명령줄에서는 `isaac-sim.bat --enable gomjb.physics_designer`.
+정션을 지우려면 `rmdir "%ISAAC%\extsUser\gomjb.physics_designer"` (링크만 지워지고 저장소는 그대로입니다).
+같은 확장을 `extsUser`에 복사본으로도 두면 같은 버전이 두 번 등록되니 복사본은 두지 마세요.
+
+**다른 방법**: `Window > Extensions` → ☰ → *Extension Search Paths* 에 `<repo>/exts` 추가, 또는
+`isaac-sim.bat --ext-folder <repo>\exts --enable gomjb.physics_designer`.
+
+검증 환경: **Isaac Sim 6.1.0 (Kit 110, Windows, RTX 5060 Ti)** — PhysX(기본 `isaac-sim.bat`)와
+Newton(`isaac-sim.newton.bat`) 양쪽에서 5개 템플릿을 시뮬레이션해 확인했습니다.
+물리 스키마는 USD 표준 `UsdPhysics`만 사용하고, 외부 패키지는 쓰지 않습니다. 정확해석기와 기구학 모드는
+별도 확장 Kinematics(`gomjb.kinematics`, 2.9)이며, 함께 쓰려면 같은 방법으로 연결합니다:
+`mklink /J "%ISAAC%\extsUser\gomjb.kinematics" "<repo>\exts\gomjb.kinematics"`.
+
+---
+
+## 2. 창 구성과 사용법
+
+창 맨 위에는 현재 선택이 **선택 순서대로** 표시됩니다 (`0: Base [rigid]  1: Arm`).
+여러 기능이 이 순서를 사용합니다 — *첫 번째 = 기준/body0*, *마지막 = 타깃*.
+
+창의 글자는 영어입니다. Isaac Sim 기본 UI 폰트에 한글 글리프가 없어 한글이 `?`로 표시되기 때문입니다.
+
+**Unit system (단위계)** — 창 맨 위에서 고릅니다. 창의 모든 입력과 결과(그래프·요약·CSV)가 이 단위로 표시되고,
+필드 이름 옆에 단위가 붙습니다(`Move step [mm]`). 시간은 항상 s, 각도는 deg입니다.
+
+| 단위계 | 길이 | 질량 | 힘 | 예: 토크 / 밀도 / 직선 강성 |
+|---|---|---|---|---|
+| MKS (기본) | m | kg | N | N*m, kg/m^3, N/m |
+| MMKS | mm | kg | N | N*mm, kg/mm^3, N/mm |
+| CGS | cm | g | dyn | dyn*cm, g/cm^3, dyn/cm |
+| MTS | m | t | kN | kN*m, t/m^3, kN/m |
+| IPS | in | lbm | lbf | lbf*in, lbm/in^3, lbf/in |
+
+* MKS·MMKS·CGS·IPS 구성은 [Ansys Motion](https://ansyshelp.ansys.com/public/views/secured/corp/v252/en/motion_pre/Unit_System_in.html)·[Altair](https://help.altair.com/mold/en_us/topics/shared/glossary/gloss_unit_system_selector_c.htm)의 정의를 따릅니다. 이 툴들처럼 단위계가 일관계일 필요는 없습니다(MMKS = mm·kg·N·s).
+* 단위계를 바꾸면 입력값은 **같은 물리량을 유지**하도록 변환됩니다(0.1 m → 100 mm). 선택은 다음 실행에도 유지됩니다.
+* **스테이지는 바뀌지 않습니다.** USD는 자체 축척(`metersPerUnit` / `kilogramsPerUnit`)으로 저장하고, 디자이너가
+  입출력 때 변환합니다. cm 스테이지에서 MMKS로 100 mm를 이동하면 스테이지 값은 10입니다.
+* 조인트의 리밋·드라이브 입력은 조인트 종류를 따릅니다(revolute: deg, N*mm/deg / prismatic: mm, N/mm).
+
+### 2.0 Modeler (모델러)
+RecurDyn·Adams의 바디 관례를 따라 **물리 준비가 끝난 강체**를 만듭니다. 바디 하나는 기준 좌표계, 형상,
+재질, 질량 특성으로 이루어집니다. Isaac의 `Create > Shape`와 달리 바디 좌표계에는 스케일이 없어서 조인트와
+앵커가 틀어지지 않습니다.
+
+| 형상 | 치수 |
+|---|---|
+| Box | size x / y / z |
+| Cylinder, Capsule, Cone | radius, height (Z축) |
+| Sphere | radius |
+| **Link** | pin distance, width, thickness — 양 끝이 둥근 막대, 양 끝 핀에 앵커 `PinA` / `PinB` 자동 생성(앵커 Z축 = 핀 축) |
+
+* **재질**: steel·stainless·aluminum·cast_iron·brass·abs_plastic·wood·rubber 밀도 프리셋, 또는 밀도·질량 직접 입력
+  (선택한 단위계로 입력, 예: MMKS 강철 7.85e-6 kg/mm^3)
+* **질량 특성**: 질량·무게중심·주관성모멘트를 **해석식으로 계산해 명시적으로 기록**합니다(수치 적분으로 1% 이내 검증).
+  충돌체가 없는 바디도 올바른 관성을 가집니다.
+* **바디 종류**: dynamic / kinematic / static(충돌체만) / visual(물리 없음)
+* **배치**: 지정 위치·자세, 선택 객체 위에 올리기, 선택한 앵커에 붙이기(Link는 `PinA`를 앵커에 맞춤)
+* **Load from selected / Apply to selected**: 치수·재질·질량을 나중에 바꾸면 형상·질량·핀 앵커가 함께 갱신됩니다.
+  (핀 위치가 바뀌면 붙어 있던 조인트는 *Realign selected joints* 로 다시 맞추세요.)
+
+### 2.1 Move & Rotate (객체 이동)
+| 기능 | 설명 |
+|---|---|
+| X±/Y±/Z± | *Move step* 만큼 이동. *Space* = world / local(객체 자신의 축) |
+| RX±/RY±/RZ± | *Rotate step* 만큼 회전. Pivot = 원점(self) / 자기 bbox 중심 / 선택 전체 중심(group) |
+| World position | 첫 선택 객체의 월드 위치 읽기 / 선택 전체에 적용 |
+| Align | 축(X/Y/Z)·기준(min/center/max)으로 bbox 정렬. 기준 객체 = first / last / group |
+| Distribute | 중심 간격 균등 분배, 또는 *gap* ≥ 0 이면 bbox 사이를 gap으로 붙여서 나열 |
+| Drop to ground / onto objects | bbox 바닥을 지면 높이에, 또는 아래에 겹치는 충돌체 위에 올림 |
+| Copy pose | 첫 객체의 위치·자세를 나머지에 복사 (스케일은 유지) |
+
+부모가 회전/스케일된 계층에서도 **월드 기준으로 정확히** 계산되며, 기존 `float3`/`quatf`
+xformOp 정밀도는 유지됩니다. 자식과 부모를 함께 선택하면 부모만 이동합니다(이중 이동 방지).
+
+### 2.2 Snap (객체 스냅)
+* **Pivot to grid / BBox corner to grid / Rotation to step** : 위치·bbox 모서리·자세(XYZ 오일러)를 격자/각도에 맞춤
+* **Live grid snap / Live angle snap** : 뷰포트 기즈모로 끄는 동안 실시간 스냅 (실험적 기능)
+* **Snap to target** : 마지막 선택 객체(타깃)의 원점 또는 bbox 중심으로 나머지를 이동
+* **Snap to nearest point** : 이동 객체의 원점(또는 bbox 27점 중 가장 가까운 점)을 타깃의
+  bbox 27점(모서리·모서리 중점·면 중심·중심) / 메쉬 정점 / 원점 중 가장 가까운 곳에 붙임
+* **Mate faces / Stack** : 타깃의 면(+Z면이면 "위에 쌓기")에 이동 객체의 반대 면을 맞붙이고 중앙 정렬, *gap* 지원
+
+### 2.3 Anchors (조립 기준점)
+부품의 구멍·핀·장착면 같은 **이름 있는 좌표계**를 만들어 조립과 조인트의 기준으로 씁니다.
+
+1. 부품 선택 → Location(원점 / bbox 중심 / ±X·±Y·±Z 면 / 직접 입력) → *Create anchor*
+   (면 앵커는 Z축이 면 법선 방향). 뷰포트에는 guide용 주황색 구로 표시되며 충돌체가 되지 않습니다.
+2. **움직일 앵커 → 타깃 앵커** 순서로 선택 → *Connect anchors*
+   앵커의 소유자(가장 가까운 rigid body 조상, 없으면 부모)가 이동해 두 앵커가 일치합니다.
+   *Flip* 은 두 Z축이 마주보게(커넥터 결합) 하고, *Then create joint* 로 그 자리에 바로 조인트 생성.
+
+### 2.4 Joints (조인트 생성 — RecurDyn 방식)
+[RecurDyn Professional의 조인트 생성 방식](https://help.functionbay.com/2024/RecurDynHelp/Professional/Professional_ch02_s02_06.html)을
+그대로 따릅니다. **조인트 종류 버튼을 누른 뒤 뷰포트에서 차례로 클릭**하면 마지막 클릭에서 조인트가 만들어집니다.
+
+| 종류 | Creation method (첫 번째가 기본) |
+|---|---|
+| Fixed, Spherical | Body, Body, Point / Point |
+| Revolute | Body, Body, Point / Body, Body, Point, Direction / Point / Point, Direction |
+| Translational | Body, Body, Point, Direction / Point, Direction (방향 필수) |
+
+* **Base body → Action body → Point → (Direction)**. Base가 기준(USD body0, articulation 부모),
+  Action이 움직이는 쪽(body1)입니다. 진행 상황은 파란 안내 줄("click the ACTION body" 등)에 나옵니다.
+* **조인트 Z축 = 회전축(revolute) / 이동축(translational).** Direction 단계에서 두 번째 점을 클릭하거나
+  *+X / +Y / +Z*, *Marker Z*(점이 스냅된 마커의 Z축)를 누릅니다. 방향이 없는 방식은 **작업 평면의 법선**(XY → Z)이 축입니다.
+* **Point 스냅**: *Key point* 는 클릭 근처의 마커(링크의 PinA/PinB 핀 중심 등)를 우선 잡고, 없으면 클릭한 형상의
+  꼭짓점·모서리 중점·면 중심 중 가장 가까운 점을 잡습니다(형상이 회전돼 있어도 형상 기준). *Surface* 는 클릭한 표면 점 그대로.
+* **바디가 아닌 것을 클릭하면 Ground**(지면·정적 물체·빈 곳). *Point* 방식은 클릭한 바디가 Action이고, 그 점을
+  포함하는 다른 바디가 Base(없으면 Ground)입니다.
+* 뷰포트 대신 선택으로도 고를 수 있습니다: *Pick from selection*(바디 단계 = 선택한 prim, 점 단계 = 선택한 앵커/prim 원점).
+* 아래 Properties(리밋, 드라이브, Break force/torque, 충돌, articulation 제외, 조인트 prim 위치)는 다음에 만들 조인트에
+  적용됩니다. 리밋·드라이브 단위는 종류를 따릅니다(revolute: deg, translational: 길이).
+
+**Motion (RecurDyn의 Include Motion)** — 조인트를 선택하고 *Include Motion*, 종류, 식을 넣은 뒤 *Apply motion*.
+
+| Motion | 식의 의미 | 추가 입력 |
+|---|---|---|
+| Displacement (time) | 조인트 변위 x(t) | — |
+| Velocity (time) | 속도 v(t) (적분해서 변위) | Initial displacement |
+| Acceleration (time) | 가속도 a(t) (두 번 적분) | Initial displacement, Initial velocity |
+
+* 단위: revolute는 **deg** (deg/s, deg/s²), translational은 선택한 단위계의 길이(mm 등). 식을 쓴 단위계가 모션과 함께
+  저장됩니다. (RecurDyn의 회전 모션 식은 radian 기준이지만, 이 디자이너는 모든 각도가 deg입니다.)
+* 식: `TIME`, `PI`, 사칙연산·거듭제곱과 `STEP(x, x0, h0, x1, h1)`(3차 스텝, RecurDyn·Adams와 같음),
+  `SIN COS TAN ASIN ACOS ATAN ATAN2 ABS SQRT EXP LOG MIN MAX SIGN MOD` (삼각함수는 radian, 대소문자 무관).
+  예: `STEP(TIME, 0, 0, 1, 90)` = 1초 동안 0 → 90, `30*SIN(2*PI*TIME)`. 이 밖의 이름·코드는 거부됩니다.
+* 모션은 조인트 prim(`designer:motion:*`)에 저장되어 모델과 함께 다닙니다. 드라이브가 없는 조인트에는 추종용 강성 드라이브
+  (1e4 N·m/deg, 1e7 N/m)가 함께 붙고, 모션을 지우면 그 드라이브도 지워집니다. *Load motion* 으로 다시 불러와 고칠 수 있습니다.
+* **PhysX 시뮬레이션**: Play 중 매 물리 스텝 직전에 드라이브 목표(위치·속도)를 모션 값으로 갱신, Stop 하면 TIME = 0 값으로
+  돌아갑니다(실측: 0 → 45° STEP에서 중간·최종 각도 일치). Newton은 실행 중 USD 변경을 읽지 않아 모션이 적용되지 않습니다.
+* **정확해석기**: Kinematics 창(2.9)의 *Simulate* 가 모션을 정확한 위치 지정 구동으로 풉니다.
+
+조인트 프레임은 **하나의 월드 프레임에서 body0/body1의 `localPos/localRot`를 동시에 계산**하므로
+(스케일·부모 회전 포함) 시뮬레이션 시작 시 물체가 튀는 현상이 없습니다.
+조인트 생성 후 body를 옮겼다면 조인트를 선택하고 *Realign selected joints* 를 누르세요.
+
+**부싱 — 조인트를 대신하는 스프링-댐퍼 (Joint model)**
+
+부싱은 조인트 대신 두 body를 6자유도 스프링-댐퍼로 잇습니다. 조인트가 막는 축은 강성이 높고,
+조인트가 허용하는 축은 강성이 0입니다. 예를 들어 Y축 회전 핀을 부싱으로 바꾸면 병진 3축과 회전 X·Z는 강성,
+회전 Y는 0입니다. USD에서는 막는 축마다 드라이브(target 0)를 단 D6 조인트(`excludeFromArticulation`)이고,
+`designer:bushing = true` 표시와 함께 `designer:bushing:sizing`에 강성 산정 근거가 기록됩니다.
+
+강체 루프 닫힘은 반복 솔버, 특히 PhysX GPU 솔버가 가장 수렴하기 어려워하는 구속입니다. 부싱은 그 구속을 연성
+구속으로 바꿉니다(MuJoCo가 모든 구속을 연성으로 다루는 것과 같은 방식이고, Adams·RecurDyn이 과구속 모델에 권하는 방법).
+
+*Joint model* 선택:
+* **Auto (기본):** 구동되지 않는 조인트가 **루프를 닫을 때만** 부싱이 됩니다. 루프를 닫는다는 것은 두 body가 이미
+  다른 조인트로 이어져 있거나, 둘 다 지면에 연결돼 있다는 뜻입니다. 트리 조인트는 정확한 조인트로 남아
+  articulation의 축소좌표 정확성을 유지하고, 루프 닫힘만 연성이 됩니다.
+* **Bushing:** 구동되지 않는 모든 조인트가 부싱이 됩니다.
+* **Rigid joint:** 항상 정확한 조인트로 만듭니다(이전 동작).
+
+드라이브나 모션이 있는 조인트는 액추에이터라서 항상 조인트로 남습니다. 이미 만든 조인트는
+*Convert selected to bushing* 으로 바꿀 수 있습니다(Undo 가능).
+
+**강성 자동 산정** (`core/bushing.py`의 `auto_stiffness`). 기준은 그 조인트가 속한 기구, 즉 조인트로 이어진
+동적 body들입니다(지면을 거쳐 이어지는 다른 기구는 제외).
+
+| 항목 | 식 | 기본 허용치 |
+|---|---|---|
+| 병진 강성 | k = M·g / δ (기구 전체 무게가 처짐 δ를 만들도록) | δ = 0.1 mm |
+| 회전 강성 | k_θ = M·g·L / θ (L = 기구 바운딩 박스 대각선) | θ = 0.01° |
+| 감쇠 | c = 2ζ·√(k·m_eff), m_eff = 두 body의 환산질량(회전은 환산 관성) | ζ = 1 (임계감쇠) |
+
+즉 기구 전체 무게가 걸려도 부싱이 허용치 이상 처지지 않을 만큼 강하게 잡습니다. 그래서 조인트처럼 동작하지만
+여전히 강체 구속이 아닌 스프링입니다. PhysX 드라이브는 암시적(implicit) 적분이라 타임스텝에 관계없이 안정하고,
+`sizing` 기록의 `omega*dt`는 부싱의 고유진동수가 스텝 주파수보다 얼마나 높은지 보여 줍니다.
+
+부싱에서 생기는 오차는 처짐만큼입니다. 실측(정확해석기, 3단 시저)에서 δ = 0.1 mm일 때 액추에이터 힘 오차는
+약 1e-4이고, δ를 1/10로 줄이면 오차도 1/10이 됩니다.
+좌/우 하중 분배는 강성을 따릅니다. 다만 Auto 모드에서는 루프 닫힘만 부드럽고 트리 핀은 강체여서,
+양쪽이 닫는 루프가 다른 2면 시저는 분배가 대칭이 아닙니다(1.3%). 구조물처럼 모든 핀의 강성으로
+반력을 나누려면 정확해석기의 `bushings` 모드를 쓰세요.
+
+**Newton 엔진을 쓸 때 (`isaac-sim.newton.bat`)**
+* body끼리 연결된 조인트는 반드시 articulation에 속해야 합니다 → 기구의 루트 prim에 *Articulation root* 적용.
+* articulation 안에서는 **Base = 부모(루트 쪽), Action = 자식** 순서로 고르세요. 반대면 Newton이
+  `Reversed joints are not supported` 로 초기화를 거부합니다.
+* 루프를 닫는 조인트는 *Exclude from artic.* 로 빼고, 회전(revolute) 조인트로 닫으세요
+  (Newton의 MuJoCo 솔버는 prismatic 루프 닫힘을 지원하지 않습니다).
+* **부싱(D6) 루프 닫힘도 Newton에서는 쓸 수 없습니다.** Joint model을 *Rigid joint* 로, 시저 템플릿은
+  `loop_closure = rigid` 로 만드세요. MuJoCo의 구속은 원래 연성이라 부싱이 필요하지 않습니다.
+
+### 2.5 Physics properties (물리 속성)
+Rigid / Kinematic / Collider only (근사: none·convexHull·convexDecomposition·meshSimplification·
+boundingCube·boundingSphere), 질량·밀도, 물리 머티리얼(정/동마찰, 반발계수 — `physics` purpose로
+바인딩해 렌더 머티리얼과 분리), Articulation root, 두 객체 간 충돌 필터, Physics scene, Ground plane,
+물리 속성 일괄 제거.
+
+*Physics scene* 버튼으로 만든 씬은 **CPU 물리(CPU dynamics + MBP broadphase)** 로 설정됩니다.
+기구 설계용 씬은 작지만 제약이 많아 CPU 솔버가 정확하고, Isaac Sim 6.1에서 GPU 솔버는 폐루프 기구(시저)가
+다른 articulation과 함께 있을 때 발산(NaN)하는 것을 확인했기 때문입니다.
+
+### 2.6 Mechanism templates (메커니즘 템플릿)
+파라미터를 입력해 바로 시뮬레이션 가능한 기구를 생성합니다 (치수·질량·드라이브는 선택한 단위계, 각도는 deg).
+템플릿은 스테이지 축척과 무관하게 같은 크기로 만들어집니다. 빌더 함수는 SI(m, kg, N/m, ...)를 받아 내부 고정 치수까지
+모두 스테이지 단위로 변환합니다(스크립트에서 `build_scissor_lift(stage, arm_length=1.2)` = 1.2 m).
+
+| 템플릿 | 구성 |
+|---|---|
+| Pendulum chain | 월드에 고정된 지지 링크 + 캡슐 링크 N개 revolute 연쇄, 초기 각도, 감쇠 |
+| Hydraulic cylinder | 배럴 + 로드 + 구동 prismatic(스트로크 제한, PD 드라이브), 장착 앵커 `MountBase`/`MountRod` |
+| Hinged door | 고정 포스트 + 도어 패널, 개방각 제한 revolute + 댐핑 |
+| Linear slider | 고정 레일 + 캐리지, 행정 제한 prismatic |
+| Scissor lift | N단 시저 암(좌/우), 중앙 핀·단간 핀, 하부 고정핀 + **구동 슬라이더(액추에이터)**, 상부 고정핀 + 자유 슬라이더 |
+
+모든 템플릿은 Isaac Sim 로봇 에셋과 같은 관례로 **루트에 ArticulationRootAPI가 있는 고정 베이스
+articulation** 이며, 조인트는 body0 = 부모, body1 = 자식입니다.
+
+시저 리프트는 폐루프 기구입니다. 일반(maximal) 조인트로 만들면 기구 배율(3단·20°에서 약 8배) 때문에
+반사 질량이 극단적으로 커져 PhysX 반복 솔버가 버티지 못하고 무너집니다(실측: 핀이 4 cm까지 벌어짐).
+그래서 트리는 articulation으로 만들고 **루프를 닫는 회전 핀만 `excludeFromArticulation`** 으로 뺐습니다.
+`loop_closure` 파라미터의 기본값은 `bushing`입니다. 이 경우 루프를 닫는 핀은 완성된 기구 기준으로
+강성을 자동 산정한 부싱이 됩니다. `rigid`를 쓰면 정확한 revolute 핀으로 닫으며, Newton에서는 이쪽을 써야 합니다.
+* 하부 `Actuator_*` prismatic 드라이브의 target을 음수로 줄수록 리프트가 올라갑니다.
+  `mechanisms.scissor_slider_offset_for_height()` 가 목표 핀 높이에 해당하는 target을 계산합니다.
+* 액추에이터 강성/감쇠는 하중과 기구 배율에서 자동 계산됩니다. `sag_tolerance`(기본 2 mm)는
+  하중에 의한 플랫폼 정적 처짐 한도이고, 감쇠는 임계 감쇠입니다.
+
+Isaac Sim 6.1 실측 (3단, 팔 1.2 m, 20°, 목표 핀 높이 2.2 m):
+
+| 엔진 | 플랫폼 상승 (목표 +0.969 m) | 최대 핀 오차 |
+|---|---|---|
+| PhysX (CPU) | +0.977 m | 0.94 mm |
+| Newton | +0.964 m | 0.94 mm |
+
+### 2.7 Validate (물리 설정 검사)
+*Validate stage* 로 다음을 검사하고, *Auto-fix* 로 고칠 수 있는 항목은 자동 수정합니다.
+
+* 조인트 양쪽 프레임 불일치(→ realign), 존재하지 않는 body 대상, body 없는 조인트, 잘못된 limit
+* 중첩된 rigid body, 충돌체/질량 없는 rigid body(→ 충돌체 추가), 비균일 스케일
+* 동적 body의 triangle-mesh 충돌체(→ convexHull), PhysicsScene 없음(→ 생성)
+* articulation 밖에서 두 body를 잇는 조인트 (Newton이 거부)
+* articulation 안에서 월드에 직접 붙은 non-fixed 조인트 (PhysX는 월드-루트 사이에 fixed만 허용 → 그 DOF와 힘이
+  articulation에서 빠짐. 월드에 고정한 베이스 링크를 두고 그 위에 조인트를 거세요)
+* GPU 물리 + 폐루프 articulation 조합(→ CPU 물리로 전환)
+
+### 2.8 Analysis (결과 기록·그래프)
+기구를 선택하고 *Use selection* → *Start recording* → Play 하면 **매 물리 스텝마다** articulation의 상태를
+기록합니다(Isaac Sim 6 텐서 API = 실제 시뮬레이션 값). 기록은 SI로 저장되고 화면·CSV는 선택한 단위계로 보입니다.
+
+| 채널 | 내용 | 단위 (MKS / MMKS) |
+|---|---|---|
+| `pos:<DOF>` | 조인트 위치 | deg, m / mm |
+| `force:<DOF>` | DOF 축 방향 힘(드라이브·액추에이터 힘) | N*m / N*mm, N |
+| `link_force:<link>:x/y/z`, `link_torque:...` | 링크로 들어오는 조인트의 6축 반력 (자식 조인트 좌표계) | N, N*m / N*mm |
+
+* *Plot*: DOF 힘 / DOF 위치 / 조인트 반력 크기, *Name filter* 로 채널 선택(최대 8계열, 색은 채널에 고정)
+* 요약(최소·최대·최종값)과 그래프(Isaac `XYPlot`), *Export CSV*(Excel·pandas에서 바로 열림)
+* 측정되지 않는 것: 루프를 닫는 조인트(articulation 제외) 반력 — PhysX 텐서 API가 제공하지 않음.
+  Newton은 힘을 제공하지 않아 위치만 기록됩니다.
+
+**정확도 검증 (Isaac Sim 6.1, PhysX CPU)** — 정답이 알려진 문제와 비교:
+
+| 케이스 | 측정 | 기준 | 오차 |
+|---|---|---|---|
+| 수직 프리즘 10 kg 지지력 | 98.100 N | m·g = 98.100 N | 0.00 % |
+| 수평 링크 2 kg × 0.5 m 지지 토크 | 9.8100 N·m | 9.8100 N·m | 0.00 % |
+| 시저 1단·한쪽 액추에이터 힘 | 443.61 N | 가상일 해석해 443.63 N | −0.01 % |
+| 시저 3단·양쪽, 좌우 합 (높이 1.5–2.5 m, 올림·내림) | 1589–3354 N | 해석해 | **±0.4 % 이내** |
+
+해석해 `mechanisms.scissor_actuator_force()` 는 실제 USD 모델의 위치에너지 수치미분과 0.1 % 이내로 일치합니다.
+
+> **양쪽(좌·우) 시저의 좌우 분담은 강체 모델로 정해지지 않습니다.** 두 쪽이 같은 플랫폼을 받치는 정역학적
+> 부정정 구조라서, 합은 정확하지만(위 표) 좌우 비율은 솔버가 중복 구속을 처리하는 방식에 따라 달라집니다
+> (실측 1358.8 N 대 1298.1 N). 상용 MBD 툴도 같은 성질이 있으며, 강성으로 분담을 구하려면
+> Kinematics 확장(2.9) 정확해석기의 *bushings* 모드를 쓰세요.
+
+### 2.9 정확해석기 · 기구학 모드 → Kinematics 확장
+정확해석기(Exudyn: 정적 평형, 드라이브 스윕, 동적 해석, 중복 구속 처리)와 기구학 모드(물리 / 운동표 / Co-Sim)는
+별도 확장 **Kinematics**(`gomjb.kinematics`, 메뉴 `Tools > Kinematics`)입니다. 이 확장이 만든 USD 모델을 그대로
+읽고, 결과는 이 창의 Analysis와 같은 그래프·CSV로 보여 줍니다. 설명은 `exts/gomjb.kinematics/docs/README.md`에 있습니다.
+
+---
+
+## 3. 스크립트에서 사용하기
+
+`core` 패키지는 `pxr`만 사용하므로 Script Editor, standalone Python, 오프라인 `usd-core` 어디서든 동작합니다.
+
+```python
+import omni.usd
+from gomjb.physics_designer.core import joints, mechanisms, physics, snapping, transform
+from gomjb.physics_designer.commands import designer_edit, run_edit
+
+stage = omni.usd.get_context().get_stage()
+base = stage.GetPrimAtPath("/World/Base")
+arm = stage.GetPrimAtPath("/World/Arm")
+
+# 하나의 Undo 단계로 묶기
+with designer_edit(["/World/Base", "/World/Arm"], "Assemble arm"):
+    physics.apply_rigid_body([base, arm])
+    snapping.mate_faces(arm, base, "+Z")                       # base 위에 올리기
+    spec = joints.JointSpec("revolute", axis="X", lower=-45, upper=45,
+                            drive=joints.DriveSpec(stiffness=1e4, damping=1e2))
+    joints.create_joint_at(stage, spec, base, arm, location="body1_bbox", world_axis="Y")
+
+# 템플릿
+run_edit(lambda s: mechanisms.build_scissor_lift(s, stages=4, arm_length=1.0))
+```
+
+**시뮬레이션 중 제어와 상태 읽기는 텐서 API로** 하세요. 재생 중에는 물리 상태가 USD가 아닌
+Fabric/텐서에 있으므로, USD에서 위치를 읽으면 초기값만 나옵니다. Newton은 실행 중 USD 속성 변경도 읽지 않습니다.
+
+```python
+from isaacsim.core.experimental.prims import Articulation, RigidPrim
+
+lift = Articulation("/World/ScissorLift")
+dofs = [i for i, n in enumerate(lift.dof_names) if n.startswith("Actuator")]
+target = mechanisms.scissor_slider_offset_for_height(1.2, 20, 3, height=2.2)
+lift.set_dof_position_targets([[target] * len(dofs)], dof_indices=dofs)
+z = RigidPrim("/World/ScissorLift/Platform").get_world_poses()[0].numpy()[0, 2]
+```
+
+예제:
+* `examples/offline_build_scene.py` — Isaac Sim 없이(`pip install usd-core`) 데모 씬 `.usda` 생성
+* `examples/isaac_standalone_scissor_lift.py` — `python.bat` 로 실행, 시저 리프트를 목표 높이까지 올리며 높이 출력
+
+---
+
+## 4. 구조
+
+```
+exts/gomjb.physics_designer/
+├── config/extension.toml
+├── gomjb/physics_designer/
+│   ├── extension.py        # IExt: 커맨드 등록, Tools 메뉴, 창
+│   ├── commands.py         # PhysicsDesignerEditCommand, run_edit(), designer_edit()
+│   ├── recording.py        # Analysis: 물리 스텝마다 articulation 상태·힘 기록 (Isaac Sim 런타임)
+│   ├── motion_runtime.py   # Play 중 조인트 모션(드라이브 목표); 다른 확장이 스텝에 참여하는 지점
+│   ├── core/               # Kit 비의존 (pxr만 사용)
+│   │   ├── math_utils.py   # 양자화, 회전/프레임, 분해/합성
+│   │   ├── transform.py    # 월드 기준 이동/회전/정렬/분배/드롭
+│   │   ├── snapping.py     # 격자/각도/타깃/최근접점/면맞춤/앵커
+│   │   ├── joints.py       # 조인트 생성, 로컬 프레임 계산, 재정렬
+│   │   ├── physics.py      # rigid body, collider, mass, material, scene
+│   │   ├── modeling.py     # 모델러: 형상 바디, 해석적 질량 특성, Link 핀 앵커
+│   │   ├── mechanisms.py   # 파라메트릭 템플릿 + 시저 해석해
+│   │   ├── results.py      # 시계열 기록, CSV
+│   │   ├── units.py        # 단위계(MKS·MMKS·CGS·MTS·IPS), 표시 단위 <-> SI <-> 스테이지 단위 변환
+│   │   ├── validation.py   # 검사 + 자동 수정
+│   │   └── snapshot.py     # 경로 단위 Undo 스냅샷
+│   ├── ui/                 # omni.ui 창(+ modeler_section, analysis_section), 결과 뷰(result_view), 위젯, 라이브 스냅
+│   └── tests/              # Kit 테스트 러너용 테스트
+├── tests_offline/          # pytest + usd-core (Kit 없이 실행)
+└── examples/
+```
+
+**Undo 방식**: 각 작업 전에 수정할 prim 하위 트리만 익명 레이어에 복사해 두고, 작업 후 새로 생긴
+prim 경로를 비교해 기록합니다. Undo 시 새 prim은 삭제하고 수정된 prim은 원래 spec으로 덮어씁니다
+(형제 순서 유지). 무거운 메쉬가 있는 씬에서도 레이어 전체를 복사하지 않습니다.
+
+---
+
+## 5. 테스트
+
+```bash
+pip install usd-core pytest
+cd exts/gomjb.physics_designer
+python -m pytest tests_offline -q
+```
+
+`tests_offline/kit_stubs.py` 는 omni.ui / omni.usd / omni.kit.commands 의 최소 대역으로, 실제 창의
+버튼 콜백과 Undo 커맨드를 usd-core 스테이지에서 실행해 봅니다.
+
+Kit 내부 테스트(`gomjb/physics_designer/tests`: 실제 omni.ui 창, 조인트·템플릿 생성, Undo/Redo, 오류 롤백)는
+Isaac Sim 자체 확장 테스트와 같은 방식으로 실행합니다:
+
+```bat
+set ISAAC=E:\isaac-sim-standalone-6.1.0-windows-x86_64
+"%ISAAC%\kit\kit.exe" --empty --enable omni.kit.test --/exts/omni.kit.test/runTestsAndQuit=true ^
+  --/exts/omni.kit.test/testExts/0=gomjb.physics_designer --/exts/omni.kit.test/testExts/1=gomjb.kinematics ^
+  --/exts/omni.kit.test/testExtArgs/0=--no-window ^
+  --ext-folder "%ISAAC%\extsUser" --ext-folder "%ISAAC%\exts" --ext-folder "%ISAAC%\extscache" ^
+  --ext-folder "%ISAAC%\extsDeprecated" --ext-folder "%ISAAC%\extsInternal" --ext-folder "%ISAAC%\apps" --no-window
+```
+
+## 6. 알려진 제한
+
+* Live snap은 USD 변경 알림으로 기즈모 드래그 결과를 다음 프레임에 양자화하는 방식이라, 드래그 중
+  약간의 떨림이 있을 수 있습니다. Kit 뷰포트 자체 스냅 기능과 함께 쓰는 것은 권장하지 않습니다.
+* 템플릿은 Z-up 기준으로 작성되며 Y-up 스테이지에서는 루트를 회전시켜 배치합니다.
+* 드라이브 stiffness 단위는 PhysX 규약을 따릅니다(각도 드라이브는 deg 기준).
+* PhysX GPU 물리에서 **강체** 루프 닫힘을 가진 articulation(시저)과 다른 articulation을 한 씬에 두면 발산합니다
+  (Isaac Sim 6.1 실측). 디자이너가 만드는 씬은 CPU 물리이고, 검증기가 GPU 씬에서 이를 경고·수정합니다.
+  루프 닫힘을 부싱으로 하면 이 경고는 나오지 않습니다. 다만 **부싱 루프의 GPU 안정성은 아직 Isaac Sim에서
+  실측하지 않았습니다.** Kit 테스트 `test_bushing_scissor_on_gpu_dynamics`가 이것을 확인합니다.

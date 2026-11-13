@@ -1,0 +1,33 @@
+[package]
+version = "0.10.0"
+title = "Physics Designer"
+description = "Python designer for Isaac Sim physics models: primitive body modeler with exact mass properties, move/align, snapping, anchors, joint creation with motions, bushings, physics properties, mechanism templates, setup validation and result recording (joint forces, plots, CSV) - all undoable. The exact solver and kinematic mechanisms are the gomjb.kinematics extension."
+category = "Simulation"
+keywords = ["isaac", "physics", "joint", "snap", "designer", "assembly", "mechanism"]
+authors = ["gomjb"]
+readme = "docs/README.md"
+changelog = "docs/CHANGELOG.md"
+
+[dependencies]
+"omni.kit.uiapp" = {}
+"omni.ui" = {}
+"omni.usd" = {}
+"omni.kit.commands" = {}
+"omni.kit.menu.utils" = {}
+"isaacsim.gui.components" = {}                 # XYPlot
+"isaacsim.core.experimental.prims" = {}        # Articulation (analysis recorder)
+"isaacsim.core.simulation_manager" = {}        # physics step callbacks (recording, motions)
+"omni.timeline" = {}                           # motions: back to TIME = 0 on Stop
+"omni.kit.viewport.utility" = {}               # joint picking: the active viewport
+"omni.ui.scene" = {}                           # joint picking: click gesture over the viewport
+
+[[python.module]]
+name = "gomjb.physics_designer"
+
+[[test]]
+# omni.kit.test already comes in through the isaacsim.core dependencies
+args =["--/app/window/dpiScaleOverride=1.0", "--no-window"]
+stdoutFailPatterns.exclude = [
+    # test_template_and_error_rollback raises inside the command on purpose; Kit logs every failing command
+    '*Failed to execute a command: PhysicsDesignerEditCommand*',
+]
