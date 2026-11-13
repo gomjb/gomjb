@@ -4,6 +4,7 @@
 #include <cstring>
 #include <vector>
 
+#include "hullcad/blocks.hpp"
 #include "hullcad/bspline.hpp"
 #include "hullcad/compute_backend.hpp"
 #include "hullcad/hull_param.hpp"
@@ -152,7 +153,94 @@ static void test_tanker_mesh_and_determinism() {
     CHECK(std::memcmp(r1.data(), r4single.data(), r1.size() * sizeof(HydroAccum)) == 0);
 }
 
+static void test_frame_table() {
+    FrameTable ft({{0, 0.80}, {50, 0.95}, {240, 0.80}});
+    CHECK_NEAR(ft.x(50), 40.0, 1e-12);
+    CHECK_NEAR(ft.x(240), 40.0 + 190 * 0.95, 1e-9);
+    CHECK_NEAR(ft.x(-2), -1.6, 1e-12);
+    for (double f : {-3.0, 0.0, 12.5, 49.99, 50.0, 133.3, 240.0, 255.5})
+        CHECK_NEAR(ft.frame(ft.x(f)), f, 1e-9);
+    CHECK_NEAR(ft.spacing_at(100), 0.95, 0.0);
+}
+
+// Box hull with shell, deck and one transverse bulkhead: block weights have a closed form,
+// and the seven zones must partition the section exactly (no gaps, no double counting).
+static void test_box_block_weights() {
+    TankerParams p;
+    p.Lpp = 60; p.B = 20; p.D = 10;
+    TriMesh box = make_box(p.Lpp, p.B, p.D);
+    TankerStructure st;
+    st.frames = FrameTable({{0, 1.0}});
+    st.cargo_aft_frame = 1000; st.cargo_fwd_frame = 1100;  // no double hull in this test
+    st.bulkhead_frames = {31};
+    auto zones = default_cargo_zones(p, st);
+    ThreadPool pool(4);
+    WeightModel wm = build_weight_model(box, p, st, zones, 0.25, pool);
+
+    auto mpa = [](const PlateSpec& s) { return s.t_mm * 1e-3 * 7.85 * (1 + s.stiff_factor); };
+    const double per_m = p.B * mpa(st.bottom_shell) + 2 * p.D * mpa(st.side_shell) + p.B * mpa(st.deck);
+    const double bhd = p.B * p.D * mpa(st.trans_bulkhead);
+    CHECK_NEAR(wm.ring_mass(0, p.Lpp).w, p.Lpp * per_m + bhd, 1e-6);
+    CHECK_NEAR(wm.ring_mass(10, 20).w, 10 * per_m, 1e-6);           // no bulkhead in range
+    CHECK_NEAR(wm.ring_mass(25, 35).w, 10 * per_m + bhd, 1e-6);     // bulkhead at x = 31
+    CHECK_NEAR(wm.ring_mass(10.3, 17.8).w, 7.5 * per_m, 1e-6);      // fractional slices
+    CHECK_NEAR(wm.ring_mass(0, p.Lpp).cog().y, 0.0, 1e-9);
+    // Bottom shell of the port double-bottom zone: y from seam (0.3) to side seam (B/2 - 2.3).
+    const double db_p = (p.B / 2 - 2.3 - 0.3) * mpa(st.bottom_shell) * 10;
+    CHECK_NEAR(wm.zone_mass(1, 10, 20).w, db_p, 1e-6);
+
+    // Same model on one thread is bit-identical.
+    ThreadPool one(1);
+    WeightModel w1 = build_weight_model(box, p, st, zones, 0.25, one);
+    CHECK(std::memcmp(w1.prefix.data(), wm.prefix.data(), wm.prefix.size() * sizeof(Mass)) == 0);
+}
+
+static void test_tanker_division() {
+    TankerParams p;
+    TriMesh hull = tessellate_hull(build_hull_surface(p), 120, 40);
+    TankerStructure st = default_tanker_structure(p);
+    auto zones = default_cargo_zones(p, st);
+    ThreadPool pool(4);
+    WeightModel wm = build_weight_model(hull, p, st, zones, 0.25, pool);
+    DivisionRules r;
+    Division d = auto_divide(wm, zones, p, st, r);
+    CHECK(d.issues.empty());
+    for (auto& s : d.issues) std::printf("  issue: %s\n", s.c_str());
+
+    std::vector<double> members = st.bulkheads_x();
+    for (double x : st.webs_x()) members.push_back(x);
+    double sum = 0;
+    for (auto& b : d.blocks) {
+        CHECK(b.mass.w <= r.max_block_weight);
+        sum += b.mass.w;
+    }
+    CHECK_NEAR(sum, wm.ring_mass(0, p.Lpp).w, 1.0);  // blocks cover the whole ship
+    for (size_t i = 0; i + 1 < d.butts.size(); ++i) {
+        double len = d.butts[i + 1] - d.butts[i];
+        CHECK(len <= r.max_ring_length + 1e-9 && len >= r.min_ring_length - 1e-9);
+    }
+    for (size_t i = 1; i + 1 < d.butts.size(); ++i)
+        for (double m : members) CHECK(std::fabs(d.butts[i] - m) >= r.min_butt_clearance);
+    // Cargo region needs at least ceil(length / max ring length) rings.
+    int cargo_rings = 0;
+    for (size_t i = 0; i + 1 < d.butts.size(); ++i) {
+        double mid = 0.5 * (d.butts[i] + d.butts[i + 1]);
+        if (mid > st.cargo_x0() && mid < st.cargo_x1()) ++cargo_rings;
+    }
+    CHECK(cargo_rings == static_cast<int>(std::ceil((st.cargo_x1() - st.cargo_x0()) / r.max_ring_length)));
+
+    // Manual butt on a web frame is reported; an impossible weight limit is reported.
+    Division bad = evaluate_division(wm, zones, p, st, {st.frames.x(65)}, r);
+    CHECK(!bad.issues.empty());
+    DivisionRules tight = r;
+    tight.max_block_weight = 40;
+    CHECK(!auto_divide(wm, zones, p, st, tight).issues.empty());
+}
+
 int main() {
+    test_frame_table();
+    test_box_block_weights();
+    test_tanker_division();
     test_bspline();
     test_box_upright();
     test_box_heel_and_trim();

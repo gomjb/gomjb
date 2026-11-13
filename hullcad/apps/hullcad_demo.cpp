@@ -6,11 +6,13 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <sstream>
 #include <fstream>
 #include <string>
 #include <thread>
 #include <vector>
 
+#include "hullcad/blocks.hpp"
 #include "hullcad/compute_backend.hpp"
 #include "hullcad/hull_param.hpp"
 #include "hullcad/hydrostatics.hpp"
@@ -54,12 +56,25 @@ int main(int argc, char** argv) {
     std::string outdir = "out";
     int threads = 0;
     bool run_bench = true;
+    DivisionRules rules;
+    std::vector<double> manual_butt_frames;
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
         if (a == "--out" && i + 1 < argc) outdir = argv[++i];
         else if (a == "--threads" && i + 1 < argc) threads = std::atoi(argv[++i]);
         else if (a == "--no-bench") run_bench = false;
-        else { std::printf("usage: hullcad_demo [--out DIR] [--threads N] [--no-bench]\n"); return 2; }
+        else if (a == "--max-block" && i + 1 < argc) rules.max_block_weight = std::atof(argv[++i]);
+        else if (a == "--ring-length" && i + 2 < argc) {
+            rules.min_ring_length = std::atof(argv[++i]);
+            rules.max_ring_length = std::atof(argv[++i]);
+        } else if (a == "--butts" && i + 1 < argc) {
+            std::stringstream ss(argv[++i]);
+            for (std::string t; std::getline(ss, t, ',');) manual_butt_frames.push_back(std::atof(t.c_str()));
+        } else {
+            std::printf("usage: hullcad_demo [--out DIR] [--threads N] [--no-bench]\n"
+                        "                    [--max-block TONNES] [--ring-length MIN MAX] [--butts FR,FR,...]\n");
+            return 2;
+        }
     }
     std::filesystem::create_directories(outdir);
 
@@ -134,6 +149,48 @@ int main(int argc, char** argv) {
     write_lines_plan_svg(mesh, spec, outdir + "/lines.svg");
     write_obj(mesh, outdir + "/hull.obj");
     std::printf("Lines plan -> %s/lines.svg, mesh -> %s/hull.obj\n", outdir.c_str(), outdir.c_str());
+
+    // Block division: structure layout -> per-zone steel weights -> butts (auto or manual) -> checks.
+    {
+        TankerStructure st = default_tanker_structure(p);
+        auto zones = default_cargo_zones(p, st);
+        ThreadPool pool(threads);
+        auto tw = std::chrono::steady_clock::now();
+        WeightModel wm = build_weight_model(mesh, p, st, zones, 0.25, pool);
+        double t_wm = seconds_since(tw);
+        Mass total = wm.ring_mass(0.0, p.Lpp);
+        Mass cargo = wm.ring_mass(st.cargo_x0(), st.cargo_x1());
+        std::printf("\n== Block division ==\n");
+        std::printf("Weight model: %d slices x %d zones, %zu transverse members, built in %.3f s (%d threads)\n",
+                    wm.nslice, wm.nzone, wm.transverse.size(), t_wm, pool.size());
+        std::printf("Estimated hull steel (modelled members only): %.0f t total, %.0f t in cargo region, LCG %.1f m\n",
+                    total.w, cargo.w, total.cog().x);
+
+        Division div;
+        if (manual_butt_frames.empty()) {
+            div = auto_divide(wm, zones, p, st, rules);
+            std::printf("Automatic division (limit %.0f t, ring %.0f-%.0f m):\n", rules.max_block_weight,
+                        rules.min_ring_length, rules.max_ring_length);
+        } else {
+            std::vector<double> xs;
+            for (double f : manual_butt_frames) xs.push_back(st.frames.x(f));
+            div = evaluate_division(wm, zones, p, st, xs, rules);
+            std::printf("Manual division check (%zu butts):\n", manual_butt_frames.size());
+        }
+        if (!div.butts.empty()) {
+            std::printf("  butts at FR:");
+            for (size_t i = 1; i + 1 < div.butts.size(); ++i) std::printf(" %.1f", st.frames.frame(div.butts[i]));
+            const Block* heavy = nullptr;
+            for (auto& b : div.blocks) if (!heavy || b.mass.w > heavy->mass.w) heavy = &b;
+            std::printf("\n  %zu rings, %zu blocks; heaviest %s %.0f t\n", div.butts.size() - 1, div.blocks.size(),
+                        heavy ? heavy->name.c_str() : "-", heavy ? heavy->mass.w : 0.0);
+            write_division_csv(div, outdir + "/blocks.csv");
+            write_division_svg(div, mesh, p, st, zones, rules, outdir + "/block_division.svg");
+            std::printf("  -> %s/blocks.csv, %s/block_division.svg\n", outdir.c_str(), outdir.c_str());
+        }
+        if (div.issues.empty()) std::printf("  all division rules met\n");
+        for (auto& s : div.issues) std::printf("  RULE: %s\n", s.c_str());
+    }
 
     if (!run_bench) return 0;
 

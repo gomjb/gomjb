@@ -19,6 +19,8 @@ add_library(hullcad_core
   src/backend_cpu.cpp
   src/hydrostatics.cpp
   src/lines_plan.cpp
+  src/structure.cpp
+  src/blocks.cpp
 )
 target_include_directories(hullcad_core PUBLIC include)
 target_link_libraries(hullcad_core PUBLIC Threads::Threads)
