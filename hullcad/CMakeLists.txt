@@ -21,6 +21,7 @@ add_library(hullcad_core
   src/lines_plan.cpp
   src/structure.cpp
   src/blocks.cpp
+  src/yard.cpp
 )
 target_include_directories(hullcad_core PUBLIC include)
 target_link_libraries(hullcad_core PUBLIC Threads::Threads)

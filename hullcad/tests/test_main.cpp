@@ -2,6 +2,8 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
+#include <algorithm>
 #include <vector>
 
 #include "hullcad/blocks.hpp"
@@ -164,7 +166,7 @@ static void test_frame_table() {
 }
 
 // Box hull with shell, deck and one transverse bulkhead: block weights have a closed form,
-// and the seven zones must partition the section exactly (no gaps, no double counting).
+// and the zones of each scheme must partition the section exactly (no gaps, no double counting).
 static void test_box_block_weights() {
     TankerParams p;
     p.Lpp = 60; p.B = 20; p.D = 10;
@@ -173,9 +175,12 @@ static void test_box_block_weights() {
     st.frames = FrameTable({{0, 1.0}});
     st.cargo_aft_frame = 1000; st.cargo_fwd_frame = 1100;  // no double hull in this test
     st.bulkhead_frames = {31};
-    auto zones = default_cargo_zones(p, st);
+    YardProfile y;
+    auto cz = default_cargo_zones(p, st, y);
+    auto ez = default_end_zones(p, y);
     ThreadPool pool(4);
-    WeightModel wm = build_weight_model(box, p, st, zones, 0.25, pool);
+    WeightModel wm = build_weight_model(box, p, st, cz, ez, 0.25, pool);
+    CHECK(wm.nzone == 12 && wm.n_cargo_zones == 8);
 
     auto mpa = [](const PlateSpec& s) { return s.t_mm * 1e-3 * 7.85 * (1 + s.stiff_factor); };
     const double per_m = p.B * mpa(st.bottom_shell) + 2 * p.D * mpa(st.side_shell) + p.B * mpa(st.deck);
@@ -185,61 +190,141 @@ static void test_box_block_weights() {
     CHECK_NEAR(wm.ring_mass(25, 35).w, 10 * per_m + bhd, 1e-6);     // bulkhead at x = 31
     CHECK_NEAR(wm.ring_mass(10.3, 17.8).w, 7.5 * per_m, 1e-6);      // fractional slices
     CHECK_NEAR(wm.ring_mass(0, p.Lpp).cog().y, 0.0, 1e-9);
-    // Bottom shell of the port double-bottom zone: y from seam (0.3) to side seam (B/2 - 2.3).
-    const double db_p = (p.B / 2 - 2.3 - 0.3) * mpa(st.bottom_shell) * 10;
-    CHECK_NEAR(wm.zone_mass(1, 10, 20).w, db_p, 1e-6);
+    // The end-body scheme partitions the same section.
+    double end_total = 0;
+    for (int z = wm.n_cargo_zones; z < wm.nzone; ++z) end_total += wm.zone_mass(z, 0, p.Lpp).w;
+    CHECK_NEAR(end_total, p.Lpp * per_m + bhd, 1e-6);
+    // Bottom shell of DB-P: y from the CL seam (0.3) to the side seam (min(B/2-2, B/2-R) - 0.3).
+    const double a = std::min(p.B / 2 - 2.0, p.B / 2 - p.bilge_radius) - 0.3;
+    CHECK(wm.zones[1].name == "DB-P");
+    CHECK_NEAR(wm.zone_mass(1, 10, 20).w, (a - 0.3) * mpa(st.bottom_shell) * 10, 1e-6);
+
+    // Box blocks are flat where the plating is planar; the DB block has the box's extents.
+    Block db = evaluate_block(wm, 1, 10, 20, y);
+    CHECK(db.flat);
+    CHECK_NEAR(db.L, 10, 1e-12);
+    CHECK_NEAR(db.B, a - 0.3, 1e-9);
+    CHECK_NEAR(db.lift_weight, db.mass.w * 1.03 * 1.05 + 8.0, 1e-9);
+
+    // Extra longitudinal seams keep the partition exact.
+    YardProfile ys = y;
+    ys.division.long_seams_y = {4.0};
+    WeightModel ws = build_weight_model(box, p, st, default_cargo_zones(p, st, ys), default_end_zones(p, ys), 0.25, pool);
+    CHECK(ws.n_cargo_zones == 14);  // DB, BHD, DECK x 2 bands x P/S + 2 sides
+    CHECK(ws.zones[0].name == "DB-1-S" && ws.zones[3].name == "DB-2-P");
+    CHECK_NEAR(ws.ring_mass(0, p.Lpp).w, p.Lpp * per_m + bhd, 1e-6);
 
     // Same model on one thread is bit-identical.
     ThreadPool one(1);
-    WeightModel w1 = build_weight_model(box, p, st, zones, 0.25, one);
+    WeightModel w1 = build_weight_model(box, p, st, cz, ez, 0.25, one);
     CHECK(std::memcmp(w1.prefix.data(), wm.prefix.data(), wm.prefix.size() * sizeof(Mass)) == 0);
+}
+
+static void test_yard_profile() {
+    YardProfile y;
+    set_yard_option(y, "transporter.units", "3");
+    set_yard_option(y, "painting.enabled", "false");
+    set_yard_option(y, "turnover.zones", "DB, DECK ,BHD");
+    set_yard_option(y, "division.long_seams_y", "10.5, 5.5");
+    CHECK(y.transporter.units == 3);
+    CHECK(!y.painting.enabled);
+    CHECK(y.turnover.zones.size() == 3 && y.turnover.zones[1] == "DECK");
+    CHECK(y.division.long_seams_y.size() == 2);
+    CHECK_NEAR(y.division.long_seams_y[1], 5.5, 0.0);
+    CHECK_NEAR(y.transporter.combined_capacity(), 3 * 300 * 0.9, 1e-9);
+
+    auto throws = [&](const char* k, const char* v) {
+        try { set_yard_option(y, k, v); } catch (const std::invalid_argument&) { return true; }
+        return false;
+    };
+    CHECK(throws("transporter.colour", "red"));
+    CHECK(throws("transporter.units", "2.5"));
+    CHECK(throws("painting.enabled", "maybe"));
+    CHECK(throws("assembly.crane_capacity", "300t"));
+
+    // Every option survives a write -> load round trip.
+    auto path = (std::filesystem::temp_directory_path() / "hullcad_yard_roundtrip.ini").string();
+    y.name = "round trip";
+    y.assembly.tandem_capacity = 432.5;
+    write_yard_profile(y, path);
+    YardProfile back = load_yard_profile(path, YardProfile{});
+    for (auto& o : yard_options(y)) CHECK(get_yard_option(y, o.key) == get_yard_option(back, o.key));
+    std::filesystem::remove(path);
 }
 
 static void test_tanker_division() {
     TankerParams p;
-    TriMesh hull = tessellate_hull(build_hull_surface(p), 120, 40);
+    TriMesh hull = tessellate_hull(build_hull_surface(p), 240, 80);
     TankerStructure st = default_tanker_structure(p);
-    auto zones = default_cargo_zones(p, st);
+    YardProfile y;
     ThreadPool pool(4);
-    WeightModel wm = build_weight_model(hull, p, st, zones, 0.25, pool);
-    DivisionRules r;
-    Division d = auto_divide(wm, zones, p, st, r);
+    WeightModel wm = build_weight_model(hull, p, st, default_cargo_zones(p, st, y), default_end_zones(p, y), 0.25, pool);
+    Division d = auto_divide(wm, p, st, y);
     CHECK(d.issues.empty());
     for (auto& s : d.issues) std::printf("  issue: %s\n", s.c_str());
 
     std::vector<double> members = st.bulkheads_x();
     for (double x : st.webs_x()) members.push_back(x);
     double sum = 0;
+    int flat_db_mid = 0;
     for (auto& b : d.blocks) {
-        CHECK(b.mass.w <= r.max_block_weight);
+        CHECK(b.ok());
+        CHECK(b.lift_weight <= y.transporter.combined_capacity() + y.weight.rigging_weight);
         sum += b.mass.w;
+        // Midship double-bottom blocks (inside the parallel middle body) must come out flat.
+        if (b.zone.rfind("DB", 0) == 0 && b.x0 > 0.35 * p.Lpp && b.x1 < 0.72 * p.Lpp) flat_db_mid += b.flat ? 1 : -100;
     }
+    CHECK(flat_db_mid > 0);
     CHECK_NEAR(sum, wm.ring_mass(0, p.Lpp).w, 1.0);  // blocks cover the whole ship
     for (size_t i = 0; i + 1 < d.butts.size(); ++i) {
         double len = d.butts[i + 1] - d.butts[i];
-        CHECK(len <= r.max_ring_length + 1e-9 && len >= r.min_ring_length - 1e-9);
+        CHECK(len <= y.division.max_ring_length + 1e-9 && len >= y.division.min_ring_length - 1e-9);
     }
     for (size_t i = 1; i + 1 < d.butts.size(); ++i)
-        for (double m : members) CHECK(std::fabs(d.butts[i] - m) >= r.min_butt_clearance);
-    // Cargo region needs at least ceil(length / max ring length) rings.
+        for (double m : members) CHECK(std::fabs(d.butts[i] - m) >= y.division.min_butt_clearance);
+    // Continuous longitudinals cap the ring at the stiffener length; the DP must reach that bound.
     int cargo_rings = 0;
     for (size_t i = 0; i + 1 < d.butts.size(); ++i) {
         double mid = 0.5 * (d.butts[i] + d.butts[i + 1]);
         if (mid > st.cargo_x0() && mid < st.cargo_x1()) ++cargo_rings;
     }
-    CHECK(cargo_rings == static_cast<int>(std::ceil((st.cargo_x1() - st.cargo_x0()) / r.max_ring_length)));
+    double cap = std::min(y.division.max_ring_length, y.cutting.max_stiffener_length);
+    CHECK(cargo_rings == static_cast<int>(std::ceil((st.cargo_x1() - st.cargo_x0()) / cap)));
 
-    // Manual butt on a web frame is reported; an impossible weight limit is reported.
-    Division bad = evaluate_division(wm, zones, p, st, {st.frames.x(65)}, r);
-    CHECK(!bad.issues.empty());
-    DivisionRules tight = r;
-    tight.max_block_weight = 40;
-    CHECK(!auto_divide(wm, zones, p, st, tight).issues.empty());
+    // A smaller transporter needs more rings; a disabled stage produces no checks.
+    YardProfile small = y;
+    small.transporter.unit_capacity = 80;
+    Division ds = auto_divide(wm, p, st, small);
+    CHECK(ds.issues.empty());
+    CHECK(ds.butts.size() > d.butts.size());
+    for (auto& b : ds.blocks) CHECK(b.transport_weight <= small.transporter.combined_capacity() + 1e-9);
+    YardProfile no_paint = y;
+    no_paint.painting.enabled = false;
+    Block b0 = evaluate_block(wm, 0, d.butts[3], d.butts[4], no_paint);
+    CHECK(std::none_of(b0.checks.begin(), b0.checks.end(), [](const Check& c) { return c.name.rfind("painting", 0) == 0; }));
+
+    // Manual butt on a web frame, and a seam on a girder, are reported.
+    CHECK(!evaluate_division(wm, p, st, {st.frames.x(65)}, y).issues.empty());
+    YardProfile bad_seam = y;
+    bad_seam.division.long_seams_y = {10.1};  // DB girder at y = 10.0
+    bool seam_issue = false;
+    for (auto& s : evaluate_division(wm, p, st, {}, bad_seam).issues) seam_issue |= s.find("DB girder") != std::string::npos;
+    CHECK(seam_issue);
+
+    // An impossible yard is diagnosed by name.
+    YardProfile tiny = y;
+    tiny.painting.cell_height = 5.0;
+    Division di = auto_divide(wm, p, st, tiny);
+    CHECK(di.butts.empty());
+    bool named = false;
+    for (auto& s : di.issues) named |= s.find("painting.size") != std::string::npos;
+    CHECK(named);
 }
 
 int main() {
     test_frame_table();
     test_box_block_weights();
+    test_yard_profile();
     test_tanker_division();
     test_bspline();
     test_box_upright();

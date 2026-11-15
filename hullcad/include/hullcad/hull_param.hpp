@@ -38,7 +38,8 @@ struct TankerParams {
     double n_fwd = 2.6;    // super-ellipse exponent at FP (larger = fuller U)
 
     int stations = 41;            // sections used to skin the surface
-    int points_per_section = 25;  // sample points per section (keel -> deck edge)
+    int points_per_section = 49;  // sample points per section (keel -> deck edge); fewer points
+                                  // let the cubic interpolant ring (~1 cm) on flat bottom/side
 };
 
 struct SectionShape {
