@@ -63,13 +63,19 @@ public:
         Box2 extent;       // all members of the zone in this slice
         Box2 flat_h;       // z-range of near-horizontal shell plating (planarity test)
         Box2 flat_v;       // y-range of near-vertical shell plating
-        double plate_len = 0;  // girth of plating in the zone (for plate counts)
+        double plate_len = 0;  // girth of skin plating (shell, deck, inner bottom/hull, CL bulkhead)
+        double member_len = 0; // girth of all longitudinal plating, incl. girders and stringers
+        double shell_len = 0;  // girth of shell and deck plating
+        double t_len = 0;      // sum of girth x thickness (mm), for the mean plate thickness
+        int joints = 0;        // plate-to-plate weld joints running along the ship
+        int seam_cross = 0;    // members crossing the zone's upper seams (welded at erection)
     };
     struct TransverseItem {
         double x;
         std::string kind;  // "bulkhead" or "web"
         std::vector<Mass> zone;
         std::vector<Box2> extent;
+        std::vector<double> area;  // gross plate area per zone (before openings), m^2
     };
 
     std::vector<Zone> zones;  // cargo scheme first, then end scheme
@@ -102,6 +108,19 @@ struct Check {
     bool ok() const { return value <= limit * (1 + 1e-12); }
 };
 
+// Production quantities of one block, the basis of utility (and later man-hour) estimates.
+struct QuantityTakeoff {
+    double plate_area = 0;        // m^2, one side, longitudinal and transverse plating (net of openings)
+    double stiffener_length = 0;  // m, longitudinals plus web/bulkhead stiffeners
+    double paint_area = 0;        // m^2, both sides of plating plus stiffener surface
+    double cut_length = 0;        // m, plate edges, web openings and slots
+    double mean_thickness = 0;    // mm, girth-weighted mean of the longitudinal plating
+    double fillet_length = 0;     // m, counted per side of each fillet joint
+    double shop_butt_length = 0;  // m, plate butts and seams inside the block
+    double erection_length = 0;   // m, block-boundary butts and seams, welded at erection
+    double heating_length = 0;    // m, line heating of curved shell plating
+};
+
 struct Block {
     int ring = 0;
     std::string name, zone;
@@ -112,6 +131,7 @@ struct Block {
     double L = 0, B = 0, H = 0;    // envelope, m
     bool flat = false;             // flat block (panel line) vs curved block
     int plate_butts = 0, plate_seams = 0;
+    QuantityTakeoff q;
     std::vector<Check> checks;
     bool ok() const;
     const Check* binding() const;  // highest utilisation
@@ -119,6 +139,9 @@ struct Block {
 
 // Evaluates one zone block of [xa, xb) against the yard profile.
 Block evaluate_block(const WeightModel& wm, int zone, double xa, double xb, const YardProfile& y);
+// Quantity takeoff of one zone block (filled into every block of a Division).
+QuantityTakeoff takeoff_block(const WeightModel& wm, int zone, double xa, double xb, bool flat,
+                              const TankerStructure& st, const YardProfile& y);
 
 struct Division {
     std::vector<double> butts;  // x positions including 0 and Lpp

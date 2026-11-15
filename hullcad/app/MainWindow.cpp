@@ -12,6 +12,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QLocale>
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QPushButton>
@@ -58,12 +59,19 @@ const HullField kHullFields[] = {
     {"선수 단면 지수 (U형>2)", &TankerParams::n_fwd, 1.5, 4.0, 2, ""},
 };
 
-QTableWidgetItem* num(double v, int decimals) {
-    auto* it = new QTableWidgetItem();
-    it->setData(Qt::DisplayRole, QString::number(v, 'f', decimals).toDouble());
-    it->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
-    return it;
-}
+// Numeric cell: shown with thousands separators, sorted by value.
+class NumItem : public QTableWidgetItem {
+public:
+    NumItem(double v, int decimals) : QTableWidgetItem(QLocale(QLocale::English).toString(v, 'f', decimals)) {
+        setData(Qt::UserRole, v);
+        setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    }
+    bool operator<(const QTableWidgetItem& o) const override {
+        return data(Qt::UserRole).toDouble() < o.data(Qt::UserRole).toDouble();
+    }
+};
+
+QTableWidgetItem* num(double v, int decimals) { return new NumItem(v, decimals); }
 
 QTableWidgetItem* text(const QString& s) { return new QTableWidgetItem(s); }
 
@@ -97,6 +105,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     tabs_->addTab(buildHullTab(), tr("선형"));
     tabs_->addTab(buildHydroTab(), tr("유체정역학 · 복원성"));
     tabs_->addTab(buildDivisionTab(), tr("블록 분할"));
+    tabs_->addTab(buildUtilityTab(), tr("유틸리티"));
     setCentralWidget(tabs_);
     buildMenus();
     connect(&hullWatch_, &QFutureWatcher<HullRun>::finished, this, &MainWindow::onHullDone);
@@ -241,12 +250,100 @@ QWidget* MainWindow::buildDivisionTab() {
     return split;
 }
 
+QWidget* MainWindow::buildUtilityTab() {
+    auto* w = new QWidget;
+    auto* v = new QVBoxLayout(w);
+    auto* note = new QLabel(tr("유틸리티 사용량 = 블록별 작업 물량 × 원단위.  원단위는 <b>참고값</b>입니다. "
+                               "'블록 분할' 탭의 야드 프로파일에서 [takeoff], [util_*] 항목을 야드 실측값으로 바꾸세요. "
+                               "시간에 비례하는 기본 부하(조명, 공조, 압축기 공회전)는 일정 정보가 필요해 포함하지 않았습니다."));
+    note->setWordWrap(true);
+    v->addWidget(note);
+    utilSummary_ = new QLabel;
+    utilSummary_->setWordWrap(true);
+    utilSummary_->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    v->addWidget(utilSummary_);
+    QStringList cols;
+    for (auto& it : utility_items()) cols << QStringLiteral("%1 (%2)").arg(QString::fromUtf8(it.label), QString::fromUtf8(it.unit));
+    auto* split = new QSplitter(Qt::Vertical);
+    utilStageTable_ = new QTableWidget;
+    setupTable(utilStageTable_, QStringList{tr("공정")} + cols);
+    utilStageTable_->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
+    split->addWidget(utilStageTable_);
+    utilBlockTable_ = new QTableWidget;
+    setupTable(utilBlockTable_, QStringList{tr("블록"), tr("강재 t"), tr("용착금속 kg")} + cols);
+    utilBlockTable_->setSortingEnabled(true);
+    utilBlockTable_->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
+    split->addWidget(utilBlockTable_);
+    split->setSizes({330, 520});
+    v->addWidget(split, 1);
+    return w;
+}
+
+void MainWindow::showUtilities(const DivisionRun& d) {
+    const UtilityReport& u = d.utilities;
+    const auto& items = utility_items();
+    utilStageTable_->setRowCount(0);
+    utilBlockTable_->setSortingEnabled(false);
+    utilBlockTable_->setRowCount(0);
+    if (u.blocks.empty()) {
+        utilSummary_->setText(tr("블록 분할 결과가 없어 계산하지 않았습니다."));
+        return;
+    }
+    const auto& Q = u.quantities;
+    utilSummary_->setText(
+        tr("<b>작업 물량</b>: 판 %1 m² · 도장 %2 m² (×%3회) · 절단 %4 m · 필릿 %5 m · 공장 맞대기 %6 m · 탑재 용접 %7 m · "
+           "선상가열 %8 m · 용착금속 %9 t (FCAW %10 t, SAW %11 t) · 탱크 화물 %12 m³ / 밸러스트 %13 m³")
+            .arg(Q.plate_area, 0, 'f', 0).arg(Q.paint_area, 0, 'f', 0).arg(u.coats)
+            .arg(Q.cut_length, 0, 'f', 0).arg(Q.fillet_length, 0, 'f', 0).arg(Q.shop_butt_length, 0, 'f', 0)
+            .arg(Q.erection_length, 0, 'f', 0).arg(Q.heating_length, 0, 'f', 0)
+            .arg(u.weld_metal_kg / 1000, 0, 'f', 1).arg(u.fcaw_kg / 1000, 0, 'f', 1).arg(u.saw_kg / 1000, 0, 'f', 1)
+            .arg(u.tanks.cargo_m3, 0, 'f', 0).arg(u.tanks.ballast_m3, 0, 'f', 0));
+
+    auto addRow = [&](const QString& name, const UtilityUse& use, bool bold, double scale = 1.0, int dec = 0) {
+        const int r = utilStageTable_->rowCount();
+        utilStageTable_->insertRow(r);
+        utilStageTable_->setItem(r, 0, text(name));
+        for (int c = 0; c < static_cast<int>(items.size()); ++c)
+            utilStageTable_->setItem(r, c + 1, num(use.*(items[c].member) * scale, dec));
+        if (bold)
+            for (int c = 0; c < utilStageTable_->columnCount(); ++c) {
+                QFont f = utilStageTable_->item(r, c)->font();
+                f.setBold(true);
+                utilStageTable_->item(r, c)->setFont(f);
+            }
+    };
+    for (int s = 0; s < kStageCount; ++s) addRow(QString::fromUtf8(stage_label(static_cast<Stage>(s))), u.by_stage[s], false);
+    addRow(tr("합계"), u.total, true);
+    if (u.steel_t > 0) addRow(tr("강재 1 t당"), u.total, false, 1.0 / u.steel_t, 2);
+
+    utilBlockTable_->setRowCount(static_cast<int>(u.blocks.size()));
+    for (int i = 0; i < static_cast<int>(u.blocks.size()); ++i) {
+        const auto& b = u.blocks[i];
+        utilBlockTable_->setItem(i, 0, text(QString::fromStdString(b.block)));
+        utilBlockTable_->setItem(i, 1, num(b.steel_t, 1));
+        utilBlockTable_->setItem(i, 2, num(b.weld_metal_kg, 0));
+        for (int c = 0; c < static_cast<int>(items.size()); ++c)
+            utilBlockTable_->setItem(i, c + 3, num(b.total.*(items[c].member), 0));
+    }
+    utilBlockTable_->setSortingEnabled(true);
+}
+
 void MainWindow::buildMenus() {
     auto* file = menuBar()->addMenu(tr("파일(&F)"));
     file->addAction(tr("야드 프로파일 열기…"), QKeySequence::Open, this, &MainWindow::openYard);
     file->addAction(tr("야드 프로파일 저장…"), QKeySequence::Save, this, &MainWindow::saveYard);
     file->addSeparator();
     file->addAction(tr("블록 목록 CSV 내보내기…"), this, &MainWindow::exportBlocksCsv);
+    file->addAction(tr("유틸리티 CSV 내보내기…"), this, [this] {
+        if (division_.utilities.blocks.empty()) return;
+        const QString path = QFileDialog::getSaveFileName(this, tr("유틸리티 내보내기"), QStringLiteral("utilities.csv"), tr("CSV (*.csv)"));
+        if (path.isEmpty()) return;
+        try {
+            write_utilities_csv(division_.utilities, QDir::toNativeSeparators(path).toStdString());
+        } catch (const std::exception& e) {
+            QMessageBox::warning(this, tr("내보내기 실패"), QString::fromUtf8(e.what()));
+        }
+    });
     file->addAction(tr("현재 도면 SVG 내보내기…"), this, &MainWindow::exportSvg);
     file->addAction(tr("선체 메쉬 OBJ 내보내기…"), this, &MainWindow::exportObj);
     file->addSeparator();
@@ -361,6 +458,7 @@ void MainWindow::onDivisionDone() {
     divButton_->setEnabled(true);
     division_ = divWatch_.result();
     showDivision(division_);
+    showUtilities(division_);
     statusBar()->showMessage(tr("블록 분할 완료 (%1 s)").arg(division_.seconds, 0, 'f', 2));
     if (!screenshotDir_.isEmpty()) QTimer::singleShot(300, this, &MainWindow::takeScreenshots);
 }

@@ -148,4 +148,39 @@ std::vector<MemberTrace> section_members(const HullSection& s, double x, const T
     return out;
 }
 
+std::vector<Joint2> section_joints(const HullSection& s, double x, const TankerParams& p, const TankerStructure& st) {
+    std::vector<Joint2> j;
+    const double b = s.half_breadth(p.D - 1e-6);
+    if (b > 0) { j.push_back({b, p.D}); j.push_back({-b, p.D}); }  // deck edge: sheer strake to deck
+    if (x < st.cargo_x0() || x > st.cargo_x1()) return j;
+
+    const double db = st.double_bottom, min_space = 0.5;
+    const double yib = inner_hull_y(s, p, st, db);
+    if (yib <= min_space) return j;
+    j.push_back({yib, db});   // inner bottom to inner hull
+    j.push_back({-yib, db});
+    const double ytop = inner_hull_y(s, p, st, p.D - 1e-6);
+    if (ytop > min_space) { j.push_back({ytop, p.D}); j.push_back({-ytop, p.D}); }  // inner hull to deck
+    if (st.centreline_bulkhead) { j.push_back({0.0, db}); j.push_back({0.0, p.D}); }
+    for (double gy : st.db_girder_y) {
+        if (gy > yib - 0.2) continue;
+        double zb = s.bottom_z(gy);
+        if (!std::isfinite(zb) || db - zb < 0.2) continue;
+        for (double sy : {1.0, -1.0}) {
+            if (gy == 0 && sy < 0) continue;
+            j.push_back({sy * gy, zb});  // girder to bottom shell
+            j.push_back({sy * gy, db});  // girder to inner bottom
+        }
+    }
+    for (double sz : st.side_stringer_z) {
+        double yi = inner_hull_y(s, p, st, sz), yo = s.half_breadth(sz);
+        if (yi <= min_space || yo - yi < 0.2) continue;
+        for (double sy : {1.0, -1.0}) {
+            j.push_back({sy * yi, sz});  // stringer to inner hull
+            j.push_back({sy * yo, sz});  // stringer to side shell
+        }
+    }
+    return j;
+}
+
 }  // namespace hullcad

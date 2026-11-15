@@ -192,7 +192,16 @@ WeightModel build_weight_model(const TriMesh& hull, const TankerParams& p, const
                 auto& si = wm.slices[k * wm.nzone + z];
                 si.extent.add(s.y0, s.z0);
                 si.extent.add(s.y1, s.z1);
+                si.member_len += len;
+                si.t_len += len * m.spec->t_mm;
                 if (is_skin(m.kind)) si.plate_len += len;
+                if (is_shell(m.kind)) si.shell_len += len;
+                // A member reaching this zone's upper seam continues into the neighbour zone:
+                // the plates are joined there at erection (each seam counted once, by its lower zone).
+                const Zone& r = wm.zones[z];
+                const double eps = 1e-9;
+                if (r.ymax < 0.5 * kBig && (std::fabs(s.y0 - r.ymax) < eps || std::fabs(s.y1 - r.ymax) < eps)) ++si.seam_cross;
+                if (r.zmax < 0.5 * kBig && (std::fabs(s.z0 - r.zmax) < eps || std::fabs(s.z1 - r.zmax) < eps)) ++si.seam_cross;
                 if (is_shell(m.kind)) {
                     // Planarity bookkeeping: horizontal plating records z, vertical records y,
                     // anything inclined records both (so the block cannot be flat).
@@ -203,6 +212,11 @@ WeightModel build_weight_model(const TriMesh& hull, const TankerParams& p, const
                 }
             }
         }
+        for (auto& jt : section_joints(hs, x, p, st))
+            for (int z = 0; z < wm.nzone; ++z) {
+                const Zone& r = wm.zones[z];
+                if (jt.y >= r.ymin && jt.y < r.ymax && jt.z >= r.zmin && jt.z < r.zmax) ++wm.slices[k * wm.nzone + z].joints;
+            }
     });
     wm.prefix.assign(static_cast<size_t>(wm.nslice + 1) * wm.nzone, Mass{});
     for (int k = 0; k < wm.nslice; ++k)
@@ -213,14 +227,15 @@ WeightModel build_weight_model(const TriMesh& hull, const TankerParams& p, const
         }
 
     // Transverse members: integrate the plate area in z strips, clipped to each zone.
-    for (double x : st.bulkheads_x()) wm.transverse.push_back({x, "bulkhead", {}, {}});
-    for (double x : st.webs_x()) wm.transverse.push_back({x, "web", {}, {}});
+    for (double x : st.bulkheads_x()) wm.transverse.push_back({x, "bulkhead", {}, {}, {}});
+    for (double x : st.webs_x()) wm.transverse.push_back({x, "web", {}, {}, {}});
     std::sort(wm.transverse.begin(), wm.transverse.end(), [](const auto& a, const auto& b) { return a.x < b.x; });
     const int nz = static_cast<int>(std::ceil(p.D / 0.05));
     pool.parallel_for(wm.transverse.size(), [&](size_t i) {
         auto& item = wm.transverse[i];
         item.zone.assign(wm.nzone, Mass{});
         item.extent.assign(wm.nzone, Box2{});
+        item.area.assign(wm.nzone, 0.0);
         const bool web = item.kind == "web";
         const PlateSpec& spec = web ? st.web : st.trans_bulkhead;
         const double mpa = plate_mass_per_area(spec) * (web ? 1.0 - st.web_opening_ratio : 1.0);
@@ -247,6 +262,7 @@ WeightModel build_weight_model(const TriMesh& hull, const TankerParams& p, const
                     double a = std::max(iv[j][0], r.ymin), b = std::min(iv[j][1], r.ymax);
                     if (b <= a) continue;
                     item.zone[zi].add((b - a) * h * mpa, item.x, 0.5 * (a + b), z);
+                    item.area[zi] += (b - a) * h;
                     item.extent[zi].add(a, z - 0.5 * h);
                     item.extent[zi].add(b, z + 0.5 * h);
                 }
@@ -383,6 +399,61 @@ Block evaluate_block(const WeightModel& wm, int z, double xa, double xb, const Y
     return b;
 }
 
+QuantityTakeoff takeoff_block(const WeightModel& wm, int z, double xa, double xb, bool flat,
+                              const TankerStructure& st, const YardProfile& y) {
+    QuantityTakeoff q;
+    const auto& to = y.takeoff;
+    const double sp = st.stiffener_spacing;
+    const double L = xb - xa;
+    int k_lo = std::max(0, static_cast<int>(std::ceil((xa - wm.x0) / wm.dx - 0.5)));
+    int k_hi = std::min(wm.nslice - 1, static_cast<int>(std::ceil((xb - wm.x0) / wm.dx - 0.5)) - 1);
+    double member_area = 0, skin_girth = 0, shell_area = 0, t_area = 0;
+    for (int k = k_lo; k <= k_hi; ++k) {
+        const auto& si = wm.slices[k * wm.nzone + z];
+        member_area += si.member_len * wm.dx;
+        shell_area += si.shell_len * wm.dx;
+        t_area += si.t_len * wm.dx;
+        skin_girth = std::max(skin_girth, si.plate_len);
+        const double n_long = si.plate_len / sp;              // longitudinals on the skins
+        q.stiffener_length += n_long * wm.dx;
+        q.fillet_length += 2.0 * (n_long + si.joints) * wm.dx; // double fillets: stiffeners and plate joints
+        q.erection_length += si.seam_cross * wm.dx;           // longitudinal seams to the neighbour zone
+    }
+    // The block's aft butt is welded at erection (the forward one belongs to the next block).
+    if (xa > wm.x0 + 1e-9 && k_lo <= k_hi) q.erection_length += wm.slices[k_lo * wm.nzone + z].member_len;
+    q.mean_thickness = member_area > 0 ? t_area / member_area : 0;
+
+    // Plate butts and seams inside the block, from the stock plate size.
+    const double Lp = y.cutting.max_plate_length, Wp = y.cutting.max_plate_width;
+    const int butts = std::max(0, static_cast<int>(std::ceil(L / Lp - 1e-9)) - 1);
+    const int seams = std::max(0, static_cast<int>(std::ceil(skin_girth / Wp - 1e-9)) - 1);
+    q.shop_butt_length = butts * skin_girth + seams * L;
+
+    // Transverse members: plate, stiffeners, perimeter fillets, openings and longitudinal slots.
+    double trans_area = 0;
+    for (auto& t : wm.transverse) {
+        if (t.x < xa || t.x >= xb || t.area[z] <= 0) continue;
+        const bool web = t.kind == "web";
+        const double gross = t.area[z];
+        const double net = web ? gross * (1.0 - st.web_opening_ratio) : gross;
+        trans_area += net;
+        const double stiff = gross / sp;
+        q.stiffener_length += stiff;
+        q.fillet_length += 2.0 * stiff + 2.0 * 2.0 * (t.extent[z].width() + t.extent[z].height());
+        if (web) {
+            const double holes = gross * st.web_opening_ratio / to.hole_area;
+            const int k = std::clamp(static_cast<int>((t.x - wm.x0) / wm.dx), 0, wm.nslice - 1);
+            const double slots = wm.slices[k * wm.nzone + z].plate_len / sp;
+            q.cut_length += holes * to.hole_perimeter + slots * to.slot_length;
+        }
+    }
+    q.plate_area = member_area + trans_area;
+    q.paint_area = 2.0 * q.plate_area + q.stiffener_length * to.stiffener_paint_girth;
+    q.cut_length += q.plate_area * 2.0 * (Lp + Wp) / (Lp * Wp);  // stock plates profile-cut on all edges
+    if (!flat) q.heating_length = shell_area * to.heating_line_density;
+    return q;
+}
+
 std::vector<double> butt_candidates(const TankerParams& p, const TankerStructure& st, const YardProfile& y) {
     std::vector<double> members = st.bulkheads_x();
     for (double x : st.webs_x()) members.push_back(x);
@@ -474,6 +545,8 @@ Division evaluate_division(const WeightModel& wm, const TankerParams& p, const T
             b.name = fmt("R%02d-%s", ring, b.zone.c_str());
             b.fr0 = st.frames.frame(xa);
             b.fr1 = st.frames.frame(xb);
+            for (int zi = 0; zi < wm.nzone; ++zi)
+                if (wm.zones[zi].name == b.zone) b.q = takeoff_block(wm, zi, xa, xb, b.flat, st, y);
             for (auto& c : b.checks)
                 if (!c.ok())
                     d.issues.push_back(fmt("block %s fails %s (%.0f %%): %s", b.name.c_str(), c.name.c_str(),

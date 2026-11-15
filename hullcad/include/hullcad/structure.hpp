@@ -47,6 +47,7 @@ struct TankerStructure {
     std::vector<double> db_girder_y;      // double-bottom girders, port offsets (0 = centre girder)
     std::vector<double> side_stringer_z;  // horizontal stringers in the double side
     double web_opening_ratio = 0.30;      // manholes / lightening holes in webs and floors
+    double stiffener_spacing = 0.85;      // m, longitudinals on plating; also web/bulkhead stiffeners
 
     // Assumed plate thicknesses for block-weight planning (not CSR scantlings).
     PlateSpec bottom_shell{18.5, 0.30}, side_shell{17.0, 0.30}, deck{18.0, 0.30};
@@ -83,6 +84,13 @@ struct MemberTrace {
 };
 std::vector<MemberTrace> section_members(const HullSection& s, double x, const TankerParams& p,
                                          const TankerStructure& st);
+
+// Points in the section where two plates meet and are joined by a fillet/butt weld that runs
+// along the ship (girder to shell, inner hull to inner bottom, deck edge, ...).
+struct Joint2 {
+    double y, z;
+};
+std::vector<Joint2> section_joints(const HullSection& s, double x, const TankerParams& p, const TankerStructure& st);
 
 // Inner-hull half-breadth at height z: 2.0 m inboard of the shell, never wider than B/2 - 2.0.
 double inner_hull_y(const HullSection& s, const TankerParams& p, const TankerStructure& st, double z);

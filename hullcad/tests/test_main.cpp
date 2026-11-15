@@ -12,6 +12,7 @@
 #include "hullcad/hull_param.hpp"
 #include "hullcad/hydrostatics.hpp"
 #include "hullcad/mesh.hpp"
+#include "hullcad/utilities.hpp"
 
 using namespace hullcad;
 
@@ -220,6 +221,79 @@ static void test_box_block_weights() {
     CHECK(std::memcmp(w1.prefix.data(), wm.prefix.data(), wm.prefix.size() * sizeof(Mass)) == 0);
 }
 
+// Quantity takeoff and utility estimate on a box hull, where every quantity has a closed form.
+static void test_box_takeoff_and_utilities() {
+    TankerParams p;
+    p.Lpp = 60; p.B = 20; p.D = 10;
+    TriMesh box = make_box(p.Lpp, p.B, p.D);
+    TankerStructure st;
+    st.frames = FrameTable({{0, 1.0}});
+    st.cargo_aft_frame = 1000; st.cargo_fwd_frame = 1100;  // shell and deck only
+    YardProfile y;
+    ThreadPool pool(4);
+    WeightModel wm = build_weight_model(box, p, st, default_cargo_zones(p, st, y), default_end_zones(p, y), 0.25, pool);
+
+    // DB-P block, x in [10, 20): bottom shell from the CL seam (0.3) to the side seam (7.3).
+    const double girth = 7.0, L = 10.0, sp = st.stiffener_spacing;
+    QuantityTakeoff q = takeoff_block(wm, 1, 10, 20, true, st, y);
+    CHECK_NEAR(q.plate_area, girth * L, 1e-9);
+    CHECK_NEAR(q.stiffener_length, girth / sp * L, 1e-9);
+    CHECK_NEAR(q.fillet_length, 2 * girth / sp * L, 1e-9);           // no plate joints in this zone
+    CHECK_NEAR(q.shop_butt_length, 1 * L, 1e-9);                     // ceil(7 / 4.5) - 1 = 1 seam, no butt
+    CHECK_NEAR(q.erection_length, L + girth, 1e-9);                  // seam to SIDE-P + aft butt
+    CHECK_NEAR(q.paint_area, 2 * girth * L + girth / sp * L * y.takeoff.stiffener_paint_girth, 1e-9);
+    CHECK_NEAR(q.cut_length, girth * L * 2 * (21.0 + 4.5) / (21.0 * 4.5), 1e-9);
+    CHECK_NEAR(q.mean_thickness, st.bottom_shell.t_mm, 1e-9);
+    CHECK_NEAR(q.heating_length, 0.0, 0.0);
+    CHECK(takeoff_block(wm, 1, 10, 20, false, st, y).heating_length > 0);
+
+    // SIDE-P holds the deck-edge joint: two fillet sides per metre on top of the stiffeners.
+    QuantityTakeoff side = takeoff_block(wm, 3, 10, 20, false, st, y);
+    const double side_girth = wm.slices[(15 * 4) * wm.nzone + 3].plate_len;
+    CHECK_NEAR(side.fillet_length, 2 * (side_girth / sp + 1) * L, 1e-6);
+
+    // Utilities of one flat block equal quantity x rate, stage by stage.
+    Division d;
+    Block b = evaluate_block(wm, 1, 10, 20, y);
+    b.name = "T-DB-P";
+    b.q = q;
+    d.blocks.push_back(b);
+    TankVolumes tv{1000.0, 500.0};
+    UtilityReport r = estimate_utilities(d, tv, y);
+    const double fillet_kg = q.fillet_length * y.takeoff.fillet_deposit;
+    const double saw_kg = q.shop_butt_length * y.takeoff.shop_butt_deposit;  // flat block -> SAW
+    const auto& W = r.by_stage[static_cast<int>(Stage::Welding)];
+    CHECK_NEAR(W.electricity_kwh, fillet_kg * y.util_welding.fcaw_kwh_per_kg + saw_kg * y.util_welding.saw_kwh_per_kg, 1e-9);
+    CHECK_NEAR(W.co2_nm3, fillet_kg * y.util_welding.fcaw_co2_nm3_per_kg, 1e-9);
+    const auto& P = r.by_stage[static_cast<int>(Stage::Painting)];
+    CHECK_NEAR(P.paint_l, q.paint_area * y.takeoff.coats * y.util_painting.paint_l_per_m2_coat, 1e-9);
+    const auto& C = r.by_stage[static_cast<int>(Stage::Cutting)];
+    CHECK_NEAR(C.electricity_kwh, q.cut_length * y.util_cutting.plasma_kwh_per_m, 1e-9);
+    const auto& H = r.by_stage[static_cast<int>(Stage::Handling)];
+    CHECK_NEAR(H.electricity_kwh, 4 * b.lift_weight * 1000 * 9.81 * 25 / 3.6e6 / 0.5, 1e-9);
+    const auto& T = r.by_stage[static_cast<int>(Stage::Testing)];
+    CHECK_NEAR(T.water_m3, 1500 * 0.5, 1e-9);
+    CHECK_NEAR(T.air_nm3, 1500 * 0.5 * (0.2 / 1.01325) * 2.0, 1e-9);
+    double sum = 0;
+    for (int s = 0; s < kStageCount; ++s) sum += r.by_stage[s].electricity_kwh;
+    CHECK_NEAR(r.total.electricity_kwh, sum, 1e-9);
+    CHECK_NEAR(r.weld_metal_kg, fillet_kg + saw_kg + q.erection_length * y.takeoff.erection_butt_deposit, 1e-9);
+
+    // Doubling a rate doubles exactly the consumption it drives.
+    YardProfile y2 = y;
+    y2.util_painting.blast_air_nm3_per_m2 *= 2;
+    UtilityReport r2 = estimate_utilities(d, tv, y2);
+    CHECK_NEAR(r2.by_stage[static_cast<int>(Stage::Painting)].air_nm3 - P.air_nm3, q.paint_area * y.util_painting.blast_air_nm3_per_m2, 1e-6);
+    CHECK_NEAR(r2.by_stage[static_cast<int>(Stage::Welding)].air_nm3, W.air_nm3, 0.0);
+
+    // Tank volumes: cargo region x in [10, 50), inner hull 2 m inboard, double bottom 2 m.
+    TankerStructure st2 = st;
+    st2.cargo_aft_frame = 10; st2.cargo_fwd_frame = 50;
+    TankVolumes v = tank_volumes(box, p, st2);
+    CHECK_NEAR(v.cargo_m3, (p.B - 4) * (p.D - 2) * 40, 1e-6);
+    CHECK_NEAR(v.ballast_m3, (p.B * p.D - (p.B - 4) * (p.D - 2)) * 40, 1e-6);
+}
+
 static void test_yard_profile() {
     YardProfile y;
     set_yard_option(y, "transporter.units", "3");
@@ -319,12 +393,25 @@ static void test_tanker_division() {
     bool named = false;
     for (auto& s : di.issues) named |= s.find("painting.size") != std::string::npos;
     CHECK(named);
+
+    // Every block of a division carries its quantity takeoff; the ship totals are consistent.
+    double plate = 0;
+    for (auto& b : d.blocks) {
+        CHECK(b.q.plate_area > 0);
+        CHECK(b.q.fillet_length > 0);
+        plate += b.q.plate_area;
+    }
+    UtilityReport ur = estimate_utilities(d, tank_volumes(hull, p, st), y);
+    CHECK_NEAR(ur.quantities.plate_area, plate, 1e-6);
+    CHECK(ur.tanks.cargo_m3 > 120000 && ur.tanks.cargo_m3 < 145000);  // 120k DWT tanker cargo capacity
+    CHECK(ur.total.electricity_kwh > 0 && ur.total.air_nm3 > 0 && ur.total.water_m3 > 0);
 }
 
 int main() {
     test_frame_table();
     test_box_block_weights();
     test_yard_profile();
+    test_box_takeoff_and_utilities();
     test_tanker_division();
     test_bspline();
     test_box_upright();

@@ -40,6 +40,13 @@ std::vector<std::pair<std::string, std::string>> yard_sections() {
         {"painting", "도장 공장: 셀 크기, 바닥 하중"},
         {"transporter", "트랜스포터: 대당 능력, 동시 투입 대수, 운반 경로 클리어런스"},
         {"erection", "탑재: 도크/골리앗 크레인 능력"},
+        {"takeoff", "물량 산출 가정: 용착량, 개구부, 도장 횟수, 곡가공 선상가열 밀도 (참고값)"},
+        {"util_cutting", "유틸리티 원단위 - 절단: 플라즈마 전력·공기, 가스절단 산소·연료 (참고값)"},
+        {"util_welding", "유틸리티 원단위 - 용접: 전력, CO2 보호가스, 가우징 공기 (참고값)"},
+        {"util_heating", "유틸리티 원단위 - 곡가공 선상가열: 연료가스, 산소, 냉각수 (참고값)"},
+        {"util_painting", "유틸리티 원단위 - 블라스팅·도장: 압축공기, 도료, 환기 전력, 건조 연료 (참고값)"},
+        {"util_handling", "유틸리티 원단위 - 크레인 전력, 트랜스포터 경유 (참고값)"},
+        {"util_testing", "유틸리티 원단위 - 탱크 수압·공기 시험 (참고값)"},
     };
 }
 
@@ -114,6 +121,51 @@ std::vector<YardOption> yard_options(YardProfile& y) {
         {"erection.enabled", T::Bool, &y.erection.enabled, "", "탑재 크레인 검사 사용"},
         {"erection.crane_capacity", T::Number, &y.erection.crane_capacity, "t", "도크/골리앗 크레인 능력"},
         {"erection.tandem_capacity", T::Number, &y.erection.tandem_capacity, "t", "텐덤 탑재 능력 (0 = 불가)"},
+
+        {"takeoff.fillet_deposit", T::Number, &y.takeoff.fillet_deposit, "kg/m", "필릿 용착량 (한쪽, 각장 약 6 mm)"},
+        {"takeoff.shop_butt_deposit", T::Number, &y.takeoff.shop_butt_deposit, "kg/m", "공장 맞대기 용접 용착량"},
+        {"takeoff.erection_butt_deposit", T::Number, &y.takeoff.erection_butt_deposit, "kg/m", "탑재 맞대기 용접 용착량"},
+        {"takeoff.hole_area", T::Number, &y.takeoff.hole_area, "m2", "웹 개구부 1개 면적"},
+        {"takeoff.hole_perimeter", T::Number, &y.takeoff.hole_perimeter, "m", "웹 개구부 1개 절단 길이"},
+        {"takeoff.slot_length", T::Number, &y.takeoff.slot_length, "m", "론지 관통 슬롯 1개 절단 길이"},
+        {"takeoff.stiffener_paint_girth", T::Number, &y.takeoff.stiffener_paint_girth, "m2/m", "보강재 1 m당 도장 면적"},
+        {"takeoff.heating_line_density", T::Number, &y.takeoff.heating_line_density, "m/m2", "곡외판 1 m2당 선상가열 길이"},
+        {"takeoff.coats", T::Integer, &y.takeoff.coats, "회", "도장 횟수"},
+        {"takeoff.saw_on_flat_blocks", T::Bool, &y.takeoff.saw_on_flat_blocks, "", "평블록 판 이음은 SAW(판넬라인)로 용접"},
+
+        {"util_cutting.plasma_max_thickness", T::Number, &y.util_cutting.plasma_max_thickness, "mm", "플라즈마 절단 최대 두께 (초과 시 가스절단)"},
+        {"util_cutting.plasma_kwh_per_m", T::Number, &y.util_cutting.plasma_kwh_per_m, "kWh/m", "플라즈마 전력"},
+        {"util_cutting.plasma_air_nm3_per_m", T::Number, &y.util_cutting.plasma_air_nm3_per_m, "Nm3/m", "플라즈마 압축공기"},
+        {"util_cutting.oxy_o2_nm3_per_m", T::Number, &y.util_cutting.oxy_o2_nm3_per_m, "Nm3/m", "가스절단 산소"},
+        {"util_cutting.oxy_fuel_nm3_per_m", T::Number, &y.util_cutting.oxy_fuel_nm3_per_m, "Nm3/m", "가스절단 연료가스 (LNG/LPG)"},
+
+        {"util_welding.fcaw_kwh_per_kg", T::Number, &y.util_welding.fcaw_kwh_per_kg, "kWh/kg", "FCAW 전력 (용착금속 1 kg당)"},
+        {"util_welding.fcaw_co2_nm3_per_kg", T::Number, &y.util_welding.fcaw_co2_nm3_per_kg, "Nm3/kg", "FCAW CO2 보호가스"},
+        {"util_welding.saw_kwh_per_kg", T::Number, &y.util_welding.saw_kwh_per_kg, "kWh/kg", "SAW 전력"},
+        {"util_welding.gouging_air_nm3_per_m", T::Number, &y.util_welding.gouging_air_nm3_per_m, "Nm3/m", "맞대기 용접 가우징·그라인딩 압축공기"},
+
+        {"util_heating.fuel_nm3_per_m", T::Number, &y.util_heating.fuel_nm3_per_m, "Nm3/m", "선상가열 연료가스"},
+        {"util_heating.o2_nm3_per_m", T::Number, &y.util_heating.o2_nm3_per_m, "Nm3/m", "선상가열 산소"},
+        {"util_heating.water_m3_per_m", T::Number, &y.util_heating.water_m3_per_m, "m3/m", "선상가열 냉각수"},
+
+        {"util_painting.blast_fraction", T::Number, &y.util_painting.blast_fraction, "-", "블록 단계 블라스팅 비율 (도장 면적 대비)"},
+        {"util_painting.blast_air_nm3_per_m2", T::Number, &y.util_painting.blast_air_nm3_per_m2, "Nm3/m2", "블라스팅 압축공기"},
+        {"util_painting.spray_air_nm3_per_m2_coat", T::Number, &y.util_painting.spray_air_nm3_per_m2_coat, "Nm3/m2", "도장 스프레이 압축공기 (1회당)"},
+        {"util_painting.paint_l_per_m2_coat", T::Number, &y.util_painting.paint_l_per_m2_coat, "L/m2", "도료 사용량 (1회당)"},
+        {"util_painting.ventilation_kwh_per_m2", T::Number, &y.util_painting.ventilation_kwh_per_m2, "kWh/m2", "도장 셀 환기·제습·조명 전력"},
+        {"util_painting.drying_fuel_nm3_per_m2", T::Number, &y.util_painting.drying_fuel_nm3_per_m2, "Nm3/m2", "건조 연료가스"},
+
+        {"util_handling.lifts_per_block", T::Integer, &y.util_handling.lifts_per_block, "회", "블록당 크레인 인양 횟수"},
+        {"util_handling.lift_height", T::Number, &y.util_handling.lift_height, "m", "평균 인양 높이"},
+        {"util_handling.crane_efficiency", T::Number, &y.util_handling.crane_efficiency, "-", "크레인 효율 (전력→위치에너지)"},
+        {"util_handling.transport_moves", T::Integer, &y.util_handling.transport_moves, "회", "블록당 트랜스포터 이동 횟수"},
+        {"util_handling.transport_km_per_move", T::Number, &y.util_handling.transport_km_per_move, "km", "이동 1회 평균 거리"},
+        {"util_handling.diesel_l_per_tkm", T::Number, &y.util_handling.diesel_l_per_tkm, "L/t·km", "트랜스포터 경유"},
+
+        {"util_testing.water_test_fraction", T::Number, &y.util_testing.water_test_fraction, "-", "수압 시험하는 탱크 용적 비율"},
+        {"util_testing.air_test_fraction", T::Number, &y.util_testing.air_test_fraction, "-", "공기 시험하는 탱크 용적 비율"},
+        {"util_testing.air_test_pressure_bar", T::Number, &y.util_testing.air_test_pressure_bar, "bar", "공기 시험 압력 (게이지)"},
+        {"util_testing.air_leak_factor", T::Number, &y.util_testing.air_leak_factor, "-", "공기 시험 손실·재시험 계수"},
     };
 }
 

@@ -10,6 +10,7 @@
 #include "hullcad/hydrostatics.hpp"
 #include "hullcad/mesh.hpp"
 #include "hullcad/structure.hpp"
+#include "hullcad/utilities.hpp"
 #include "hullcad/yard.hpp"
 
 namespace hullcad::app {
@@ -22,6 +23,7 @@ struct HullRun {
     double KG = 0;
     std::vector<GZPoint> gz;
     std::string lines_svg;
+    TankVolumes tanks;                // cargo / ballast tank volumes (tank-test utilities)
     double seconds = 0;
     std::string error;                // non-empty: the run failed
 };
@@ -31,6 +33,7 @@ struct DivisionRun {
     std::vector<CheckSummary> summary;
     std::string svg;
     Mass steel_total;
+    UtilityReport utilities;          // work-driven utility estimate of the blocks
     bool manual = false;
     double seconds = 0;
     std::string error;

@@ -48,6 +48,7 @@ HullRun run_hull(const TankerParams& p, double KG, int threads) {
         for (double z = 1.0; z < p.D - 0.5; z += 2.0) spec.waterlines.push_back(z);
         for (double y = 4.0; y < 0.5 * p.B; y += 4.0) spec.buttocks.push_back(y);
         r.lines_svg = lines_plan_svg(r.mesh, spec);
+        r.tanks = tank_volumes(r.mesh, p, default_tanker_structure(p));
     } catch (const std::exception& e) {
         r.error = e.what();
     }
@@ -81,6 +82,7 @@ DivisionRun run_division(const HullRun& hull, const YardProfile& yard, const std
             r.division = auto_divide(wm, p, st, yard);
         }
         r.summary = summarize_checks(r.division);
+        if (!r.division.blocks.empty()) r.utilities = estimate_utilities(r.division, hull.tanks, yard);
         if (!r.division.butts.empty()) r.svg = division_svg(r.division, hull.mesh, p, st, wm, yard);
     } catch (const std::exception& e) {
         r.error = e.what();

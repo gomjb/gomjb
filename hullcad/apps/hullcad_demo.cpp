@@ -18,6 +18,7 @@
 #include "hullcad/hydrostatics.hpp"
 #include "hullcad/lines_plan.hpp"
 #include "hullcad/mesh.hpp"
+#include "hullcad/utilities.hpp"
 
 using namespace hullcad;
 
@@ -228,6 +229,35 @@ int main(int argc, char** argv) {
         }
         if (div.issues.empty()) std::printf("  all yard checks pass\n");
         for (auto& s : div.issues) std::printf("  RULE: %s\n", s.c_str());
+
+        // Utilities: work quantities of every block x the yard's unit consumption (reference values).
+        if (!div.blocks.empty()) {
+            TankVolumes tv = tank_volumes(mesh, p, st);
+            UtilityReport ur = estimate_utilities(div, tv, yard);
+            const auto& Q = ur.quantities;
+            std::printf("\n== Utilities (unit rates are reference values; replace with yard data) ==\n");
+            std::printf("Quantities: plate %.0f m2, coated %.0f m2, cutting %.0f m, fillet %.0f m, shop butt %.0f m, "
+                        "erection %.0f m, line heating %.0f m\n",
+                        Q.plate_area, Q.paint_area, Q.cut_length, Q.fillet_length, Q.shop_butt_length,
+                        Q.erection_length, Q.heating_length);
+            std::printf("Weld metal %.1f t (FCAW %.1f t, SAW %.1f t); tanks: cargo %.0f m3, ballast %.0f m3\n",
+                        ur.weld_metal_kg / 1000, ur.fcaw_kg / 1000, ur.saw_kg / 1000, tv.cargo_m3, tv.ballast_m3);
+            std::printf("  %-12s", "stage");
+            for (auto& it : utility_items()) std::printf(" %12s", it.key);
+            std::printf("\n");
+            auto row = [&](const char* name, const UtilityUse& u) {
+                std::printf("  %-12s", name);
+                for (auto& it : utility_items()) std::printf(" %12.0f", u.*(it.member));
+                std::printf("\n");
+            };
+            for (int s = 0; s < kStageCount; ++s) row(stage_key(static_cast<Stage>(s)), ur.by_stage[s]);
+            row("TOTAL", ur.total);
+            std::printf("  per tonne of steel: %.0f kWh, %.1f Nm3 CO2, %.0f Nm3 air, %.1f L paint\n",
+                        ur.total.electricity_kwh / ur.steel_t, ur.total.co2_nm3 / ur.steel_t,
+                        ur.total.air_nm3 / ur.steel_t, ur.total.paint_l / ur.steel_t);
+            write_utilities_csv(ur, outdir + "/utilities.csv");
+            std::printf("  -> %s/utilities.csv\n", outdir.c_str());
+        }
 
         // What-if sweep over one yard option, reusing the weight model (zones depend only on
         // division.* keys, which therefore cannot be swept here).

@@ -112,6 +112,67 @@ struct YardProfile {
         double crane_capacity = 900.0;  // dock / goliath crane
         double tandem_capacity = 0.0;
     } erection;
+
+    // ---- Utility estimation. All rates are illustrative reference values: replace them with the
+    // yard's own measured unit consumption before using the results for planning.
+    struct Takeoff {
+        double fillet_deposit = 0.16;        // kg weld metal per metre of fillet (one side, ~6 mm leg)
+        double shop_butt_deposit = 1.8;      // kg/m, plate butts/seams in the shop (~18 mm plate)
+        double erection_butt_deposit = 2.2;  // kg/m, block joints at erection
+        double hole_area = 0.5;              // m^2 per web opening (manhole / lightening hole)
+        double hole_perimeter = 2.7;         // m of cutting per opening
+        double slot_length = 0.9;            // m of cutting per longitudinal slot in a web
+        double stiffener_paint_girth = 0.7;  // m^2 of coated surface per metre of stiffener
+        double heating_line_density = 1.5;   // m of line heating per m^2 of curved shell
+        int coats = 3;
+        bool saw_on_flat_blocks = true;      // shop butts of flat blocks by SAW (panel line)
+    } takeoff;
+
+    struct UtilCutting {
+        double plasma_max_thickness = 30.0;  // mm; thicker plates are cut by oxy-fuel
+        double plasma_kwh_per_m = 0.35;
+        double plasma_air_nm3_per_m = 0.12;
+        double oxy_o2_nm3_per_m = 0.20;
+        double oxy_fuel_nm3_per_m = 0.03;
+    } util_cutting;
+
+    struct UtilWelding {
+        double fcaw_kwh_per_kg = 4.0;        // incl. power-source losses and idle
+        double fcaw_co2_nm3_per_kg = 0.40;   // shielding gas
+        double saw_kwh_per_kg = 2.2;
+        double gouging_air_nm3_per_m = 1.5;  // back-gouging / grinding of butt welds
+    } util_welding;
+
+    struct UtilHeating {
+        double fuel_nm3_per_m = 0.03;   // LNG/LPG for line heating
+        double o2_nm3_per_m = 0.08;
+        double water_m3_per_m = 0.01;   // quench water
+    } util_heating;
+
+    struct UtilPainting {
+        double blast_fraction = 1.0;              // share of the coated area blasted at block stage
+        double blast_air_nm3_per_m2 = 25.0;
+        double spray_air_nm3_per_m2_coat = 1.5;
+        double paint_l_per_m2_coat = 0.25;
+        double ventilation_kwh_per_m2 = 1.5;      // ventilation, dehumidification, lighting in the cell
+        double drying_fuel_nm3_per_m2 = 0.05;
+    } util_painting;
+
+    struct UtilHandling {
+        int lifts_per_block = 4;          // assembly, turnover, painting, erection
+        double lift_height = 25.0;        // m
+        double crane_efficiency = 0.5;
+        int transport_moves = 3;
+        double transport_km_per_move = 1.5;
+        double diesel_l_per_tkm = 0.05;
+    } util_handling;
+
+    struct UtilTesting {
+        double water_test_fraction = 0.5;  // share of tank volume hydro-tested with water
+        double air_test_fraction = 0.5;    // share of tank volume air-tested
+        double air_test_pressure_bar = 0.2;
+        double air_leak_factor = 2.0;      // compressed air used per theoretical fill (leaks, repeats)
+    } util_testing;
 };
 
 // One INI key bound to a profile field, with its unit and help text (used for parsing, `--set`

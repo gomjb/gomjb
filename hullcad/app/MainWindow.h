@@ -45,6 +45,8 @@ private:
     QWidget* buildHullTab();
     QWidget* buildHydroTab();
     QWidget* buildDivisionTab();
+    QWidget* buildUtilityTab();
+    void showUtilities(const hullcad::app::DivisionRun& d);
     void buildMenus();
     hullcad::TankerParams hullParams() const;
     void showHull(const hullcad::app::HullRun& h);
@@ -71,6 +73,10 @@ private:
     QTableWidget* blocksTable_ = nullptr;
     QTableWidget* checksTable_ = nullptr;
     QListWidget* issuesList_ = nullptr;
+    // Utilities tab
+    QLabel* utilSummary_ = nullptr;
+    QTableWidget* utilStageTable_ = nullptr;
+    QTableWidget* utilBlockTable_ = nullptr;
 
     std::shared_ptr<const hullcad::app::HullRun> hull_;
     hullcad::app::DivisionRun division_;
