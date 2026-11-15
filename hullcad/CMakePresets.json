@@ -1,0 +1,58 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": { "major": 3, "minor": 25, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "windows-base",
+      "hidden": true,
+      "generator": "Visual Studio 17 2022",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "installDir": "${sourceDir}/dist/${presetName}",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" }
+    },
+    {
+      "name": "windows-x64",
+      "displayName": "Windows x64 (Qt: QT_DIR_X64)",
+      "inherits": "windows-base",
+      "architecture": { "value": "x64", "strategy": "set" },
+      "cacheVariables": { "CMAKE_PREFIX_PATH": "$env{QT_DIR_X64}" }
+    },
+    {
+      "name": "windows-arm64",
+      "displayName": "Windows ARM64, native build on an ARM64 PC (Qt: QT_DIR_ARM64)",
+      "inherits": "windows-base",
+      "architecture": { "value": "ARM64", "strategy": "set" },
+      "cacheVariables": { "CMAKE_PREFIX_PATH": "$env{QT_DIR_ARM64}" }
+    },
+    {
+      "name": "windows-arm64-cross",
+      "displayName": "Windows ARM64, cross build on an x64 PC (Qt: QT_DIR_ARM64 + host QT_DIR_X64)",
+      "inherits": "windows-base",
+      "architecture": { "value": "ARM64", "strategy": "set" },
+      "cacheVariables": {
+        "CMAKE_PREFIX_PATH": "$env{QT_DIR_ARM64}",
+        "QT_HOST_PATH": "$env{QT_DIR_X64}"
+      }
+    },
+    {
+      "name": "linux-release",
+      "displayName": "Linux / macOS release (Qt: CMAKE_PREFIX_PATH)",
+      "generator": "Unix Makefiles",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "installDir": "${sourceDir}/dist/${presetName}",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" },
+      "condition": { "type": "notEquals", "lhs": "${hostSystemName}", "rhs": "Windows" }
+    }
+  ],
+  "buildPresets": [
+    { "name": "windows-x64", "configurePreset": "windows-x64", "configuration": "Release" },
+    { "name": "windows-arm64", "configurePreset": "windows-arm64", "configuration": "Release" },
+    { "name": "windows-arm64-cross", "configurePreset": "windows-arm64-cross", "configuration": "Release" },
+    { "name": "linux-release", "configurePreset": "linux-release" }
+  ],
+  "testPresets": [
+    { "name": "windows-x64", "configurePreset": "windows-x64", "configuration": "Release", "output": { "outputOnFailure": true } },
+    { "name": "windows-arm64", "configurePreset": "windows-arm64", "configuration": "Release", "output": { "outputOnFailure": true } },
+    { "name": "linux-release", "configurePreset": "linux-release", "output": { "outputOnFailure": true } }
+  ]
+}

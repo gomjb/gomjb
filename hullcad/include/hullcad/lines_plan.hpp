@@ -20,6 +20,7 @@ struct LinesPlanSpec {
     std::vector<double> buttocks;    // y positions (port)
 };
 
+std::string lines_plan_svg(const TriMesh& m, const LinesPlanSpec& spec);
 void write_lines_plan_svg(const TriMesh& m, const LinesPlanSpec& spec, const std::string& path);
 
 }  // namespace hullcad

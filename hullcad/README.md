@@ -1,9 +1,30 @@
-# hullcad: 조선 설계용 선형 CAD 코어 (1단계)
+# hullcad: 조선 설계용 선형 CAD
 
-선형(hull form)을 B-spline 곡면으로 정의하고, 유체정역학과 복원성을 **멀티스레드 CPU**와
-**GPGPU(CUDA)** 백엔드로 계산하는 C++20 코어입니다. 기준선은 **120k DWT 원유 탱커(Aframax/LR2급)**입니다.
+선형(hull form)을 B-spline 곡면으로 정의하고, 유체정역학·복원성과 블록 분할을 계산하는 C++20 프로그램입니다.
+계산은 **멀티스레드 CPU**와 **GPGPU(CUDA)** 백엔드로 하고, **Windows x64 / ARM64 데스크톱 앱(Qt 6)**을 제공합니다.
+기준선은 **120k DWT 원유 탱커(Aframax/LR2급)**입니다.
 
-![lines plan](docs/lines_plan.png)
+![block division tab](docs/app/tab3.png)
+
+## 데스크톱 앱 (Windows x64 / ARM64)
+
+| 탭 | 내용 |
+|---|---|
+| 선형 | 주요 치수와 형상 파라미터를 입력하면 선형을 생성합니다. 주요 요목을 계산하고 선도를 보여 줍니다(휠 확대, 드래그 이동, 더블클릭 맞춤). |
+| 유체정역학 · 복원성 | 정수압 곡선표, KG를 입력해 GZ 곡선 계산 |
+| 블록 분할 | **야드 프로파일 입력 화면**. 58개 옵션 변수를 공정별로 묶은 폼입니다. 블록 분할도, 블록 목록(정렬), 설비 병목, 규칙 위반·진단을 보여 줍니다. |
+
+- 입력 폼은 옵션 등록부(`yard_options()`)에서 **자동 생성**됩니다. 코드에 옵션을 추가하면 화면에도 바로 나타납니다.
+- 공정을 끄면 그 공정의 한계값 입력이 비활성화됩니다.
+- 계산은 백그라운드 스레드에서 돌아가므로 화면이 멈추지 않습니다.
+- 파일 메뉴에서 야드 프로파일 열기·저장, 블록 CSV, 도면 SVG, 메쉬 OBJ를 내보낼 수 있습니다.
+
+빌드 방법은 **[docs/BUILD_WINDOWS.md](docs/BUILD_WINDOWS.md)**에 있습니다. 한 줄 요약:
+`.\scripts\build-windows.ps1 -Arch all -QtX64 C:\Qt\6.8.3\msvc2022_64 -QtArm64 C:\Qt\6.8.3\msvc2022_arm64`
+
+| 선형 | 유체정역학 · 복원성 |
+|---|---|
+| ![hull tab](docs/app/tab1.png) | ![hydrostatics tab](docs/app/tab2.png) |
 
 ## 현재 할 수 있는 것
 
@@ -19,6 +40,7 @@
 | `structure` | 프레임 테이블과 참조 기반 탱커 구조 배치(횡격벽, 웹, 이중저·이중선체, 거더, 스트링거). 선형이 바뀌면 다시 생성됨 |
 | `yard` | 야드 프로파일: 공정별 설비 한계(절단, 판넬라인, 곡블록, 중조립, 대조립, 반전, 도장, 트랜스포터, 탑재)를 INI로 입력 |
 | `blocks` | 블록 분할: 존(seam), 존별 중량·형상 모델, 야드 검사, 버트 자동 선정(DP), 불가능 원인 진단, 병목 리포트, CSV·SVG 출력 |
+| `app/` | Qt 6 데스크톱 앱. 계산 파이프라인(`pipeline`, Qt 비의존), 야드 입력 폼, 선도·분할도 뷰어, GZ 플롯 |
 
 ### 데모 결과 (설계 흘수 15 m)
 
@@ -112,11 +134,15 @@ What-if 결과 예시:
 
 ## 빌드
 
+Windows는 [docs/BUILD_WINDOWS.md](docs/BUILD_WINDOWS.md)를 보세요. Linux와 macOS는 아래와 같습니다.
+(Qt 6가 없으면 앱만 빼고 빌드합니다.)
+
 ```bash
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build -j
-./build/hullcad_tests             # 단위 테스트
-./build/hullcad_demo --out out    # 오프셋, 정수압표, GZ, 선도, OBJ 메쉬 출력 + 벤치마크
+cmake --preset linux-release -DCMAKE_PREFIX_PATH=/path/to/Qt/6.8.3/gcc_64
+cmake --build --preset linux-release -j
+ctest --preset linux-release                          # 단위 테스트
+./build/linux-release/app/hullcad                     # 데스크톱 앱
+./build/linux-release/hullcad_demo --out out          # 명령줄: 오프셋, 정수압표, GZ, 선도, 블록 분할 + 벤치마크
 ```
 
 CUDA 백엔드 (NVIDIA GPU와 CUDA Toolkit 12.x 필요):

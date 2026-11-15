@@ -68,7 +68,9 @@ double fit3(double L, double W, double H, double SL, double SW, double SH) {
     return std::max(fit2(L, W, SL, SW), H / SH);
 }
 
+#if defined(__GNUC__) || defined(__clang__)
 std::string fmt(const char* f, ...) __attribute__((format(printf, 1, 2)));
+#endif
 std::string fmt(const char* f, ...) {
     char buf[512];
     va_list ap;
@@ -588,8 +590,8 @@ void write_division_csv(const Division& d, const std::string& path) {
     }
 }
 
-void write_division_svg(const Division& d, const TriMesh& hull, const TankerParams& p, const TankerStructure& st,
-                        const WeightModel& wm, const YardProfile& y, const std::string& path) {
+std::string division_svg(const Division& d, const TriMesh& hull, const TankerParams& p, const TankerStructure& st,
+                         const WeightModel& wm, const YardProfile& y) {
     const double W = 1600, pad = 40;
     const double k = (W - 2 * pad) / p.Lpp;  // profile scale, px/m
     const double prof_top = 84;
@@ -718,9 +720,14 @@ void write_division_svg(const Division& d, const TriMesh& hull, const TankerPara
              "start", b.ok() ? "#333" : "#b00020", 12);
     }
     o << "</svg>\n";
+    return o.str();
+}
+
+void write_division_svg(const Division& d, const TriMesh& hull, const TankerParams& p, const TankerStructure& st,
+                        const WeightModel& wm, const YardProfile& y, const std::string& path) {
     std::ofstream f(path);
     if (!f) throw std::runtime_error("cannot write " + path);
-    f << o.str();
+    f << division_svg(d, hull, p, st, wm, y);
 }
 
 }  // namespace hullcad

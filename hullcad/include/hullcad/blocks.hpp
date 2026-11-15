@@ -148,6 +148,8 @@ struct CheckSummary {
 std::vector<CheckSummary> summarize_checks(const Division& d);
 
 void write_division_csv(const Division& d, const std::string& path);
+std::string division_svg(const Division& d, const TriMesh& hull, const TankerParams& p, const TankerStructure& st,
+                         const WeightModel& wm, const YardProfile& y);
 void write_division_svg(const Division& d, const TriMesh& hull, const TankerParams& p, const TankerStructure& st,
                         const WeightModel& wm, const YardProfile& y, const std::string& path);
 

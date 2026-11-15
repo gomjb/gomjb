@@ -30,7 +30,7 @@ std::vector<Segment> slice(const TriMesh& m, int axis, double value) {
     return segs;
 }
 
-void write_lines_plan_svg(const TriMesh& m, const LinesPlanSpec& s, const std::string& path) {
+std::string lines_plan_svg(const TriMesh& m, const LinesPlanSpec& s) {
     // Layout (metres, then scaled): sheer plan on top, half-breadth plan below it,
     // body plan on the right (aft sections left of centreline, forward sections right).
     const double gap = 0.06 * s.Lpp;
@@ -94,10 +94,13 @@ void write_lines_plan_svg(const TriMesh& m, const LinesPlanSpec& s, const std::s
     o << "<text x='" << pad << "' y='" << H * k + 2 * pad + 8 << "'>Lpp " << s.Lpp << " m, B " << s.B << " m, D "
       << s.D << " m, T " << s.T << " m. Sheer plan (buttocks), half-breadth plan (waterlines), body plan "
       << "(aft | fwd sections).</text>\n</g>\n</svg>\n";
+    return o.str();
+}
 
+void write_lines_plan_svg(const TriMesh& m, const LinesPlanSpec& s, const std::string& path) {
     std::ofstream f(path);
     if (!f) throw std::runtime_error("cannot write " + path);
-    f << o.str();
+    f << lines_plan_svg(m, s);
 }
 
 }  // namespace hullcad
