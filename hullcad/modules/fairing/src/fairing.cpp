@@ -416,6 +416,7 @@ CurveQuality curve_quality(const std::vector<CurvatureSample>& s) {
             const double ds = s[i].s - s[i - 1].s;
             const double dk = s[i].kappa - s[i - 1].kappa;
             q.max_kappa_jump = std::max(q.max_kappa_jump, std::fabs(dk));
+            q.variation += std::fabs(dk);
             if (ds > 0) q.energy += dk * dk / ds;
         }
     }
@@ -423,27 +424,6 @@ CurveQuality curve_quality(const std::vector<CurvatureSample>& s) {
 }
 
 namespace {
-
-// Fairs one station. input: the points fitted; before_pts: the points whose interpolant is the
-// unfaired section; offsets: unfaired section with the surface's point count (kept when the
-// fairing is not applicable).
-SectionFairing fair_station(double x, const std::vector<Vec3>& input, const std::vector<Vec3>& before_pts,
-                            std::vector<Vec3> offsets, const FairingOptions& o, int npts) {
-    SectionFairing s;
-    s.x = x;
-    s.offsets = std::move(offsets);
-    s.composite = fair_curve(input, o);
-    s.max_deviation = s.composite.max_deviation;
-    s.ok = s.max_deviation <= 2.0 * o.tolerance;
-    s.faired = s.ok ? s.composite.sample(npts) : s.offsets;
-    s.faired.front().y = 0.0;  // keel on the centreline
-    s.before = interpolate(before_pts, 3);
-    s.after = interpolate(s.faired, 3);
-    s.q_before = curve_quality(curvature_samples(s.before, 1200));
-    s.q_after = curve_quality(curvature_samples(s.after, 1200));
-    s.q_composite = curve_quality(curvature_samples(s.composite, 1200));
-    return s;
-}
 
 // n points equally spaced in arc length along the interpolant of pts.
 std::vector<Vec3> resample(const std::vector<Vec3>& pts, int n) {
@@ -455,6 +435,28 @@ std::vector<Vec3> resample(const std::vector<Vec3>& pts, int n) {
     out.front() = pts.front();
     out.back() = pts.back();
     return out;
+}
+
+// Fairs one station. input: the points fitted; before_pts: the points whose interpolant is the
+// unfaired section; offsets: unfaired section with the surface's point count (kept when the
+// fairing is not applicable).
+SectionFairing fair_station(double x, const std::vector<Vec3>& input, const std::vector<Vec3>& before_pts,
+                            std::vector<Vec3> offsets, const FairingOptions& o) {
+    const int npts = std::max(4, o.surface_points);
+    SectionFairing s;
+    s.x = x;
+    s.offsets = std::move(offsets);
+    s.composite = fair_curve(input, o);
+    s.max_deviation = s.composite.max_deviation;
+    s.ok = s.max_deviation <= 2.0 * o.tolerance;
+    s.faired = s.ok ? s.composite.sample(npts) : resample(s.offsets, npts);
+    s.faired.front().y = 0.0;  // keel on the centreline
+    s.before = interpolate(before_pts, 3);
+    s.after = interpolate(s.faired, 3);
+    s.q_before = curve_quality(curvature_samples(s.before, 1200));
+    s.q_after = curve_quality(curvature_samples(s.after, 1200));
+    s.q_composite = curve_quality(curvature_samples(s.composite, 1200));
+    return s;
 }
 
 }  // namespace
@@ -470,7 +472,7 @@ HullFairing fair_hull_sections(const TankerParams& p, const FairingOptions& opt,
         auto offsets = section_points(shape, x, p.D, p.points_per_section);
         const auto dense = section_points(shape, x, p.D, dense_points);
         auto before = offsets;
-        h.sections.push_back(fair_station(x, dense, before, std::move(offsets), o, p.points_per_section));
+        h.sections.push_back(fair_station(x, dense, before, std::move(offsets), o));
     }
     return h;
 }
@@ -484,7 +486,7 @@ HullFairing fair_offset_table(const OffsetTable& t, const FairingOptions& opt, i
         const Vec3 d = st[1] - st[0];
         o.start_tangent = std::fabs(d.z) <= std::tan(20.0 * 3.14159265358979 / 180.0) * std::fabs(d.y) ? Vec3{0, 1, 0} : Vec3{};
         o.end_tangent = Vec3{};
-        h.sections.push_back(fair_station(st.front().x, st, st, resample(st, points_per_section), o, points_per_section));
+        h.sections.push_back(fair_station(st.front().x, st, st, resample(st, points_per_section), o));
     }
     return h;
 }

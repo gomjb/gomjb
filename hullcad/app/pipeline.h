@@ -8,6 +8,7 @@
 #include "hullcad/production_design/blocks.hpp"
 #include "hullcad/cad/hull_param.hpp"
 #include "hullcad/fairing/fairing.hpp"
+#include "hullcad/fairing/network.hpp"
 #include "hullcad/naval/hydrostatics.hpp"
 #include "hullcad/cad/mesh.hpp"
 #include "hullcad/planning/schedule.hpp"
@@ -30,6 +31,11 @@ struct HullRun {
     HullFairing fairing;              // section fairing analysis (always computed)
     std::shared_ptr<const OffsetTable> offsets;  // imported offsets, or null for the parametric hull
     bool faired_surface = false;      // surface built from the faired sections
+    NetworkResult network;            // waterline / buttock inspection; girth-line fairing if applied
+    bool network_faired = false;      // the faired sections were network-faired
+    double network_tolerance = 0;     // m
+    CurvatureMap curvature;           // normal curvatures of the surface the mesh came from
+    int stripes_before_network = -1;  // longitudinal sign changes before the network fairing
     double seconds = 0;
     std::string error;                // non-empty: the run failed
 };
@@ -51,8 +57,11 @@ struct DivisionRun {
 
 // Hull surface, mesh, hydrostatic table, GZ curve (fixed trim) and lines plan.
 // table != nullptr: the hull comes from an imported offset table (main dimensions from the table).
+// network_tolerance > 0: fair the girth lines too, moving section points by at most that many
+// metres (only with faired_surface).
 HullRun run_hull(const TankerParams& p, double KG, int threads, const FairingOptions& fairing = {},
-                 bool faired_surface = false, std::shared_ptr<const OffsetTable> table = nullptr);
+                 bool faired_surface = false, std::shared_ptr<const OffsetTable> table = nullptr,
+                 double network_tolerance = 0);
 // GZ curve only, on an existing hull.
 std::vector<GZPoint> run_gz(const HullRun& hull, double KG, int threads);
 // Structure, weight model and block division (automatic if manual_frames is empty).

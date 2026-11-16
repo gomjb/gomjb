@@ -44,7 +44,7 @@ hullcad는 기능별 모듈로 나뉘어 있습니다. 모듈마다 독립된 �
 |---|---|---|---|---|
 | `core` | 공통 | `core/vec3`, `core/parallel`, `core/calendar` | 벡터 연산(CPU·CUDA 공용), 결정적 스레드풀, 날짜·작업일 달력 | — |
 | `cad` | 선형 설계 | `cad/bspline`, `cad/hull_param`, `cad/mesh`, `cad/lines_plan` | B-spline 곡선·곡면, 파라메트릭 선형, 닫힌 메쉬, 단면 절단, 선도 | core |
-| `fairing` | 선형 순정 | `fairing/fairing` | 허용 오차 안 곡률 변화 에너지 최소화, 직선 구간 검출, G1/G2 접속, 곡률 콤·변곡점·에너지 | cad, core |
+| `fairing` | 선형 순정 | `fairing/fairing`, `fairing/network` | 허용 오차 안 곡률 변화 에너지 최소화, 직선 구간 검출, G1/G2 접속, 곡률 콤·변곡점·에너지, 곡선망(거스 라인) 순정, 수선·버톡 검사, 곡면 곡률 지도 | cad, core |
 | `naval` | 기본설계 계산 | `naval/hydro_kernel`, `naval/compute_backend`, `naval/hydrostatics` | 배수량, 부심, 수선면, 정수압표, GZ 곡선. CPU 멀티스레드와 CUDA 백엔드 | core, cad |
 | `structure` | 구조 설계 | `structure/structure` | 프레임 테이블, 참조 기반 부재 배치(격벽, 웹, 이중선체, 거더, 스트링거), 단면 부재·용접 접합부 | cad |
 | `yard` | 조선소 설비 | `yard/facility` | 공정별 설비 한계(절단, 판넬라인, 곡블록, 중조립, 대조립, 반전, 도장, 트랜스포터, 탑재), 유틸리티 공급 능력. 데이터만 있음 | — |
@@ -102,7 +102,7 @@ hullcad/
 | 예정 모듈 | 업무 | 위치 (의존) |
 |---|---|---|
 | `cad` 확장 (OCCT 8.0) | B-rep 솔리드, STEP/IGES, 판재·보강재 실형상 | cad 안, 또는 cad 위 `cad_occt` |
-| `fairing` 확장 | 곡선망(수선·버톡 교차점 공유) 순정, 곡면 곡률·제브라 검사, 다중 패치 | fairing 안 |
+| `fairing` 확장 | 다중 패치(평저선·평측선 경계), 제브라 렌더링, 수선·버톡 직접 수정 | fairing 안 |
 | `stability` | 자유 트림 GZ, 탱크·적하 조건, 손상 복원성(MARPOL), GPU 배치 | naval, structure 위 |
 | `outfitting` | 의장품, 선행의장 물량 | structure 위 |
 | `cost` | 공수, 원가 | production 위 |

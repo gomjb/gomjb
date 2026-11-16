@@ -33,6 +33,7 @@
 #include <stdexcept>
 
 #include "CombPlot.h"
+#include "NetworkPlot.h"
 #include "DailyPlot.h"
 #include "GzPlot.h"
 #include "SvgView.h"
@@ -137,12 +138,18 @@ void MainWindow::start() { runHull(); }
 
 void MainWindow::setBilgeG2(bool g2) { bilgeCombo_->setCurrentIndex(g2 ? 1 : 0); }
 
+void MainWindow::setNetworkFairing(bool on) {
+    if (on) fairSurfaceCheck_->setChecked(true);
+    networkCheck_->setChecked(on);
+}
+
 bool MainWindow::loadOffsets(const QString& path) {
     try {
         auto t = std::make_shared<OffsetTable>(read_offsets_csv(QDir::toNativeSeparators(path).toStdString()));
         const OffsetTableInfo info = describe(*t);
         table_ = t;
         fairSurfaceCheck_->setChecked(true);  // measured / entered offsets: build from the faired sections
+        networkCheck_->setChecked(true);      // and fair the girth lines (stations entered one by one)
         bilgeCombo_->setEnabled(false);
         sourceLabel_->setText(tr("<b>가져온 오프셋</b>: %1<br>스테이션 %2개 × 점 %3~%4개, Lpp %5 m, 최대 반폭 %6 m, 최대 높이 %7 m. "
                                  "주요 치수(Lpp, B, D)는 오프셋에서 정합니다.")
@@ -159,6 +166,7 @@ bool MainWindow::loadOffsets(const QString& path) {
 void MainWindow::useParametric() {
     table_.reset();
     fairSurfaceCheck_->setChecked(false);
+    networkCheck_->setChecked(false);
     bilgeCombo_->setEnabled(true);
     sourceLabel_->setText(tr("파라메트릭 선형 (위 파라미터)"));
 }
@@ -199,6 +207,21 @@ QWidget* MainWindow::buildHullTab() {
     fairSurfaceCheck_->setToolTip(tr("파라메트릭 선형처럼 오차 없는 단면은 원래 단면으로 곡면을 만드는 편이 더 정확합니다.\n"
                                      "측정·입력 오차가 있는 오프셋에 사용하세요."));
     fform->addRow(QString(), fairSurfaceCheck_);
+    networkCheck_ = new QCheckBox(tr("곡선망 순정 (거스 라인 · 평행부 직선)"));
+    networkCheck_->setToolTip(tr("같은 거스 위치의 점을 배 길이 방향으로 이어 순정합니다. 평행 중앙부는 정확히 직선이 되고\n"
+                                 "선수미부는 G2로 이어집니다. 스테이션마다 따로 입력·측정한 오프셋의 단차(줄무늬)를 없앱니다."));
+    networkCheck_->setEnabled(false);
+    connect(fairSurfaceCheck_, &QCheckBox::toggled, networkCheck_, &QCheckBox::setEnabled);
+    fform->addRow(QString(), networkCheck_);
+    networkTolSpin_ = new QDoubleSpinBox;
+    networkTolSpin_->setRange(0.5, 50);
+    networkTolSpin_->setDecimals(1);
+    networkTolSpin_->setSuffix(QStringLiteral(" mm"));
+    networkTolSpin_->setValue(5.0);
+    networkTolSpin_->setToolTip(tr("곡선망 순정이 단면점을 옮길 수 있는 최대 거리. 스테이션별 오차보다 크게 잡으세요."));
+    networkTolSpin_->setEnabled(false);
+    connect(networkCheck_, &QCheckBox::toggled, networkTolSpin_, &QDoubleSpinBox::setEnabled);
+    fform->addRow(tr("곡선망 허용 오차"), networkTolSpin_);
     accuracySpin_ = new QDoubleSpinBox;
     accuracySpin_->setRange(0, 20);
     accuracySpin_->setDecimals(1);
@@ -278,6 +301,59 @@ QWidget* MainWindow::buildHullTab() {
     fsplit->setSizes({560, 260});
     fv->addWidget(fsplit, 1);
     right->addTab(fw, tr("단면 순정 (곡률 콤)"));
+
+    auto* nw = new QWidget;
+    auto* nv = new QVBoxLayout(nw);
+    networkSummary_ = new QLabel;
+    networkSummary_->setWordWrap(true);
+    nv->addWidget(networkSummary_);
+    auto* nrow = new QHBoxLayout;
+    nrow->addWidget(new QLabel(tr("검사 곡선")));
+    networkCurve_ = new QComboBox;
+    connect(networkCurve_, &QComboBox::currentIndexChanged, this, [this](int i) {
+        if (!hull_ || i < 0 || i >= static_cast<int>(hull_->network.curves.size())) return;
+        longPlot_->setCurve(hull_->network.curves[i], hull_->network_faired);
+        networkTable_->selectRow(i);
+    });
+    nrow->addWidget(networkCurve_);
+    const QString setNames[3] = {tr("원래"), tr("단면 순정"), tr("곡선망 순정")};
+    for (int k = 0; k < 3; ++k) {
+        auto* cb = new QCheckBox(setNames[k]);
+        cb->setChecked(k != 0);
+        connect(cb, &QCheckBox::toggled, this, [this, k](bool on) { longPlot_->setShow(k, on); });
+        nrow->addWidget(cb);
+    }
+    nrow->addWidget(new QLabel(tr("휠: x 확대 · 드래그: 이동 · 더블클릭: 전체")));
+    nrow->addStretch(1);
+    nv->addLayout(nrow);
+    auto* nsplit = new QSplitter(Qt::Vertical);
+    longPlot_ = new LongitudinalPlot;
+    longPlot_->setShow(0, false);
+    nsplit->addWidget(longPlot_);
+    networkTable_ = new QTableWidget;
+    setupTable(networkTable_, {tr("곡선"), tr("점"), tr("변곡점 원래"), tr("변곡점 단면 순정"), tr("변곡점 곡선망"),
+                               tr("곡률 변동량 원래"), tr("곡률 변동량 단면 순정"), tr("곡률 변동량 곡선망")});
+    networkTable_->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
+    connect(networkTable_, &QTableWidget::cellClicked, this, [this](int r, int) { networkCurve_->setCurrentIndex(r); });
+    nsplit->addWidget(networkTable_);
+    nsplit->setSizes({560, 260});
+    nv->addWidget(nsplit, 1);
+    right->addTab(nw, tr("곡선망 검사 (수선·버톡)"));
+
+    auto* cw = new QWidget;
+    auto* cv = new QVBoxLayout(cw);
+    curvSummary_ = new QLabel;
+    curvSummary_->setWordWrap(true);
+    cv->addWidget(curvSummary_);
+    auto* crow = new QHBoxLayout;
+    auto* longBtn = new QCheckBox(tr("거스 방향 곡률 보기"));
+    connect(longBtn, &QCheckBox::toggled, this, [this](bool on) { curvMap_->setGirth(on); });
+    crow->addWidget(longBtn);
+    crow->addStretch(1);
+    cv->addLayout(crow);
+    curvMap_ = new CurvatureMapView;
+    cv->addWidget(curvMap_, 1);
+    right->addTab(cw, tr("곡면 곡률 지도"));
     split->addWidget(right);
     split->setStretchFactor(1, 3);
     split->setSizes({360, 1100});
@@ -657,9 +733,10 @@ void MainWindow::runHull() {
     fo.junction_continuity = (!table_ && p.n_mid > 2.5) ? 2 : 1;  // G2 joints only where the design bilge is G2
     fo.offset_accuracy = table_ ? accuracySpin_->value() / 1000.0 : 0.0;
     const bool fair_surface = fairSurfaceCheck_->isChecked();
+    const double network = fair_surface && networkCheck_->isChecked() ? networkTolSpin_->value() / 1000.0 : 0.0;
     auto table = table_;
-    hullWatch_.setFuture(QtConcurrent::run([p, KG, n, fo, fair_surface, table] {
-        return run_hull(p, KG, n, fo, fair_surface, table);
+    hullWatch_.setFuture(QtConcurrent::run([p, KG, n, fo, fair_surface, table, network] {
+        return run_hull(p, KG, n, fo, fair_surface, table, network);
     }));
 }
 
@@ -746,6 +823,62 @@ void MainWindow::showHull(const HullRun& h) {
     const int mid = static_cast<int>(secs.size()) / 2;
     if (stationSpin_->value() == mid && !secs.empty()) combPlot_->setSection(secs[mid]);
     stationSpin_->setValue(mid);
+    showNetwork(h);
+}
+
+void MainWindow::showNetwork(const HullRun& h) {
+    const auto& nr = h.network;
+    double vr = 0, vs = 0, vf = 0;
+    int ir = 0, is = 0, inf = 0;
+    for (auto& c : nr.curves) {
+        vr += c.q_raw.variation; vs += c.q_sectioned.variation; vf += c.q_faired.variation;
+        ir += c.q_raw.inflections; is += c.q_sectioned.inflections; inf += c.q_faired.inflections;
+    }
+    networkSummary_->setText(
+        h.network_faired
+            ? tr("곡선망 순정: 거스 라인 %1개 (평행부 직선 %2개), 단면점 최대 이동 %3 mm (허용 %4 mm) · "
+                 "수선·버톡 %5개의 곡률 변동량 합계 %6 → %7 → %8, 변곡점 %9 → %10 → %11 (원래 → 단면 순정 → 곡선망 순정)")
+                  .arg(nr.girth_lines).arg(nr.straight_lines).arg(nr.max_move * 1000, 0, 'f', 1)
+                  .arg(h.network_tolerance * 1000, 0, 'f', 1).arg(nr.curves.size())
+                  .arg(vr, 0, 'f', 2).arg(vs, 0, 'f', 2).arg(vf, 0, 'f', 2).arg(ir).arg(is).arg(inf)
+            : tr("검사만 (곡선망 순정 꺼짐): 수선·버톡 %1개의 곡률 변동량 합계 %2 → %3, 변곡점 %4 → %5 (원래 → 단면 순정). "
+                 "'순정 단면으로 곡면 생성'과 '곡선망 순정'을 켜면 거스 라인도 순정합니다.")
+                  .arg(nr.curves.size()).arg(vr, 0, 'f', 2).arg(vs, 0, 'f', 2).arg(ir).arg(is));
+    networkTable_->setRowCount(static_cast<int>(nr.curves.size()));
+    const int keep = networkCurve_->currentIndex();
+    networkCurve_->blockSignals(true);
+    networkCurve_->clear();
+    for (int i = 0; i < static_cast<int>(nr.curves.size()); ++i) {
+        const auto& c = nr.curves[i];
+        networkCurve_->addItem(QString::fromStdString(c.name()));
+        networkTable_->setItem(i, 0, text(QString::fromStdString(c.name())));
+        networkTable_->setItem(i, 1, num(static_cast<double>(c.sectioned.size()), 0));
+        networkTable_->setItem(i, 2, num(c.q_raw.inflections, 0));
+        networkTable_->setItem(i, 3, num(c.q_sectioned.inflections, 0));
+        networkTable_->setItem(i, 4, num(c.q_faired.inflections, 0));
+        networkTable_->setItem(i, 5, num(c.q_raw.variation, 3));
+        networkTable_->setItem(i, 6, num(c.q_sectioned.variation, 3));
+        networkTable_->setItem(i, 7, num(c.q_faired.variation, 3));
+    }
+    networkCurve_->blockSignals(false);
+    if (!nr.curves.empty()) {
+        // Keep the selected curve across runs; first run: WL 1 m, just above the flat bottom.
+        int pick = keep >= 0 && keep < static_cast<int>(nr.curves.size()) ? keep : 0;
+        networkCurve_->setCurrentIndex(pick);
+        longPlot_->setCurve(nr.curves[pick], h.network_faired);
+    } else {
+        longPlot_->clear();
+    }
+
+    const int stripes = h.curvature.long_sign_changes();
+    curvSummary_->setText(
+        h.stripes_before_network >= 0
+            ? tr("곡면의 길이 방향 곡률 부호 변화 %1 → %2회 (곡선망 순정 전 → 후). 배 길이 방향으로 빨강·파랑이 번갈아 나오는 "
+                 "세로 줄무늬는 이웃 스테이션끼리 어긋난 곳입니다.").arg(h.stripes_before_network).arg(stripes)
+            : tr("곡면의 길이 방향 곡률 부호 변화 %1회. 배 길이 방향으로 빨강·파랑이 번갈아 나오는 세로 줄무늬는 이웃 스테이션끼리 "
+                 "어긋난 곳입니다 (제브라 검사와 같은 목적).").arg(stripes));
+    curvMap_->setMap(h.curvature, h.faired_surface ? (h.network_faired ? tr("곡면: 곡선망 순정 단면") : tr("곡면: 순정 단면"))
+                                                   : tr("곡면: 원래 단면"));
 }
 
 void MainWindow::runGz() {

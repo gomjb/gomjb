@@ -27,7 +27,7 @@ std::vector<double> gz_heels() {
 }  // namespace
 
 HullRun run_hull(const TankerParams& p_in, double KG, int threads, const FairingOptions& fairing, bool faired_surface,
-                 std::shared_ptr<const OffsetTable> table) {
+                 std::shared_ptr<const OffsetTable> table, double network_tolerance) {
     HullRun r;
     TankerParams p = table ? params_for_table(*table, p_in) : p_in;
     r.params = p;
@@ -37,7 +37,17 @@ HullRun run_hull(const TankerParams& p_in, double KG, int threads, const Fairing
     const auto t0 = std::chrono::steady_clock::now();
     try {
         r.fairing = table ? fair_offset_table(*table, fairing, p.points_per_section) : fair_hull_sections(p, fairing);
+        NetworkOptions no = default_network(p);
+        no.tolerance = std::max(network_tolerance, 1e-4);
+        no.offset_accuracy = fairing.offset_accuracy;
+        no.fair_girth_lines = network_tolerance > 0 && faired_surface;
+        if (no.fair_girth_lines)
+            r.stripes_before_network = surface_curvature_map(build_faired_hull_surface(r.fairing, p)).long_sign_changes();
+        r.network = fair_network(r.fairing, no);
+        r.network_faired = r.network.girth_lines > 0;
+        r.network_tolerance = no.tolerance;
         BSplineSurface S = faired_surface ? build_faired_hull_surface(r.fairing, p) : build_offset_surface(r.fairing);
+        r.curvature = surface_curvature_map(S);
         r.mesh = tessellate_hull(S, 240, 80);
         auto be = make_cpu_backend(threads);
         be->upload(r.mesh);

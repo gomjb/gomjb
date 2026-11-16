@@ -35,6 +35,9 @@ struct FairingOptions {
     double junction_margin = 1.0;      // m of each straight run handed to the curve, so a G2
                                        // transition can start inside the run (the true flat-of-
                                        // bottom line is where the curvature starts to rise)
+    int surface_points = 97;           // points per faired section handed to the surface: dense
+                                       // enough that interpolating them does not ring where the
+                                       // bilge meets the flat (49 points leave ~3 mm on the flat)
     Vec3 start_tangent{};  // direction at the first point when no straight run starts there (0 = free)
     Vec3 end_tangent{};    // direction at the last point when no straight run ends there (0 = free)
     Vec3 plane_normal{1, 0, 0};  // curves lie in planes normal to this (signed curvature sign)
@@ -60,6 +63,8 @@ struct CurveQuality {
     int inflections = 0;          // sign changes of the signed curvature (|kappa| > 1e-3 1/m)
     double energy = 0;            // integral (d kappa / ds)^2 ds
     double max_kappa_jump = 0;    // largest curvature jump between neighbouring samples, 1/m
+    double variation = 0;         // total variation of the curvature, sum |d kappa| (1/m): how much
+                                  // the curvature goes up and down along the curve
 };
 struct CurvatureSample {
     double s;       // arc length
@@ -77,7 +82,8 @@ CurveQuality curve_quality(const std::vector<CurvatureSample>& s);
 struct SectionFairing {
     double x = 0;
     std::vector<Vec3> offsets;   // the offsets the surface would be built from without fairing
-    std::vector<Vec3> faired;    // faired offsets (same count) used to build the surface
+    std::vector<Vec3> faired;    // faired section sampled at FairingOptions::surface_points points
+                                 // (the offsets resampled to that count if not applicable)
     FairedCurve composite;       // faired section
     BSplineCurve before, after;  // section curves the surface actually carries (interpolants)
     CurveQuality q_before, q_after;
@@ -93,10 +99,11 @@ struct HullFairing {
 };
 
 // Fairs every station of the parametric hull. dense_points: offsets per station fed to the
-// fairing (the surface still uses p.points_per_section per station).
+// fairing (the unfaired surface still uses p.points_per_section per station).
 HullFairing fair_hull_sections(const TankerParams& p, const FairingOptions& opt, int dense_points = 481);
 // Fairs every station of an imported offset table (x already shifted to start at 0). The
-// unfaired sections are the table's interpolants resampled to points_per_section.
+// unfaired sections are the table's interpolants resampled to points_per_section; the faired
+// ones have opt.surface_points.
 HullFairing fair_offset_table(const OffsetTable& t, const FairingOptions& opt, int points_per_section = 49);
 
 // Skinned surface through the faired sections (offsets where fairing was not applicable).

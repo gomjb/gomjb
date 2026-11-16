@@ -191,15 +191,30 @@ TankerParams params_for_table(const OffsetTable& t, TankerParams base) {
     return base;
 }
 
-OffsetTable parametric_offset_table(const TankerParams& p, int points, double noise, double round_to, unsigned seed) {
+OffsetTable parametric_offset_table(const TankerParams& p, int points, double noise, double round_to, unsigned seed,
+                                    double station_error) {
     OffsetTable t;
     t.source = "parametric";
-    for (double x : station_positions(p)) {
+    auto rnd = [&]() {
+        seed = seed * 1664525u + 1013904223u;
+        return ((seed >> 8) / 16777216.0) * 2.0 - 1.0;
+    };
+    const auto xs = station_positions(p);
+    for (size_t k = 0; k < xs.size(); ++k) {
+        const double x = xs[k];
         auto pts = section_points(section_at(p, x), x, p.D, points);
+        // Whole-station shift (not at AP / FP, whose sections are fixed by the stem and stern).
+        const bool shift = station_error > 0 && k > 0 && k + 1 < xs.size();
+        const double dy = shift ? station_error * rnd() : 0.0, dz = shift ? station_error * rnd() : 0.0;
+        for (size_t i = 0; i < pts.size(); ++i) {
+            if (i > 0) pts[i].y += dy;
+            pts[i].z += dz;
+        }
+        if (shift && round_to > 0)
+            for (double* c : {&pts.front().z, &pts.back().y, &pts.back().z}) *c = std::round(*c / round_to) * round_to;
         for (size_t i = 1; i + 1 < pts.size(); ++i) {
             for (double* c : {&pts[i].y, &pts[i].z}) {
-                seed = seed * 1664525u + 1013904223u;
-                *c += noise * (((seed >> 8) / 16777216.0) * 2.0 - 1.0);
+                *c += noise * rnd();
                 if (round_to > 0) *c = std::round(*c / round_to) * round_to;
             }
             pts[i].y = std::max(0.0, pts[i].y);

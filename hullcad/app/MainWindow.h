@@ -15,6 +15,8 @@ class QTabWidget;
 class QTableWidget;
 class QTextBrowser;
 class CombPlot;
+class CurvatureMapView;
+class LongitudinalPlot;
 class DailyPlot;
 class QCheckBox;
 class QSpinBox;
@@ -33,6 +35,7 @@ public:
     void setScreenshotDir(const QString& dir) { screenshotDir_ = dir; }
     void start();
     void setBilgeG2(bool g2);
+    void setNetworkFairing(bool on);
     bool loadOffsets(const QString& path);
     void useParametric();
 
@@ -60,6 +63,7 @@ private:
     void buildMenus();
     hullcad::TankerParams hullParams() const;
     void showHull(const hullcad::app::HullRun& h);
+    void showNetwork(const hullcad::app::HullRun& h);
     void showDivision(const hullcad::app::DivisionRun& d);
     void takeScreenshots();
     int threads() const;
@@ -77,6 +81,14 @@ private:
     QSpinBox* stationSpin_ = nullptr;
     CombPlot* combPlot_ = nullptr;
     QTableWidget* fairTable_ = nullptr;
+    QCheckBox* networkCheck_ = nullptr;
+    QDoubleSpinBox* networkTolSpin_ = nullptr;
+    QLabel* networkSummary_ = nullptr;
+    QComboBox* networkCurve_ = nullptr;
+    LongitudinalPlot* longPlot_ = nullptr;
+    QTableWidget* networkTable_ = nullptr;
+    CurvatureMapView* curvMap_ = nullptr;
+    QLabel* curvSummary_ = nullptr;
     QPushButton* hullButton_ = nullptr;
     QTextBrowser* particulars_ = nullptr;
     SvgView* linesView_ = nullptr;

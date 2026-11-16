@@ -9,6 +9,7 @@ qt_add_executable(hullcad_app WIN32 MACOSX_BUNDLE
   GzPlot.cpp GzPlot.h
   DailyPlot.cpp DailyPlot.h
   CombPlot.cpp CombPlot.h
+  NetworkPlot.cpp NetworkPlot.h
   pipeline.cpp pipeline.h
 )
 set_target_properties(hullcad_app PROPERTIES OUTPUT_NAME hullcad)

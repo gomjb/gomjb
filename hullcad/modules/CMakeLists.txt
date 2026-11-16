@@ -40,7 +40,7 @@ hullcad_module(cad
 
 # 선형 순정: penalised curve fairing, curvature analysis, faired hull sections
 hullcad_module(fairing
-  SOURCES fairing/src/fairing.cpp
+  SOURCES fairing/src/fairing.cpp fairing/src/network.cpp
   DEPS hullcad::cad hullcad::core)
 
 # 선박 계산: hydrostatics and stability on multithreaded CPU / CUDA backends

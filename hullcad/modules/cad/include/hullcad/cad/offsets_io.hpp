@@ -45,9 +45,11 @@ OffsetTableInfo describe(const OffsetTable& t);
 TankerParams params_for_table(const OffsetTable& t, TankerParams base);
 
 // Offset table of the parametric hull: `points` per station, optional uniform noise of
-// +-noise metres on the interior points (to imitate measured / hand-entered offsets) and
-// rounding to `round_to` metres (0 = no rounding).
+// +-noise metres on the interior points (to imitate measured / hand-entered offsets), an
+// optional shift of +-station_error metres of each whole station in y and z (stations lofted or
+// measured one by one, so each carries its own small offset), and rounding to `round_to` metres
+// (0 = no rounding).
 OffsetTable parametric_offset_table(const TankerParams& p, int points, double noise = 0, double round_to = 0,
-                                    unsigned seed = 1);
+                                    unsigned seed = 1, double station_error = 0);
 
 }  // namespace hullcad

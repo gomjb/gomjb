@@ -16,6 +16,7 @@
 #include "hullcad/cad/mesh.hpp"
 #include "hullcad/cad/offsets_io.hpp"
 #include "hullcad/fairing/fairing.hpp"
+#include "hullcad/fairing/network.hpp"
 #include "hullcad/planning/schedule.hpp"
 #include "hullcad/production/daily_load.hpp"
 #include "hullcad/production/utilities.hpp"
@@ -438,6 +439,97 @@ static void test_fairing() {
     CHECK(!hf.sections.back().ok || hf.sections.back().max_deviation <= 2 * so.tolerance);
 }
 
+
+// Curve-network fairing: stations entered one by one carry their own offsets; the girth-line
+// fairing makes the parallel middle body straight again and removes the stripes.
+static void test_network_fairing() {
+    TankerParams p;
+    OffsetTable t = parametric_offset_table(p, 25, 0.0005, 0.001, 11, 0.003);  // +-3 mm per station
+    FairingOptions o;
+    o.junction_continuity = 1;
+    o.offset_accuracy = 0.001;
+    HullFairing h = fair_offset_table(t, o, p.points_per_section);
+    const HullFairing before = h;
+
+    // Flatness of the midship bottom of the faired surface (slices at x = 100, 120, 140 m).
+    auto bottom_range = [&](const HullFairing& f) {
+        const TriMesh msh = tessellate_hull(build_faired_hull_surface(f, p), 240, 80);
+        double lo = 1e9, hi = -1e9;
+        for (double xx : {100.0, 120.0, 140.0})
+            for (auto& g : slice(msh, 0, xx))
+                for (auto& pt : {g.first, g.second})
+                    if (pt.y > 0.3 && pt.y < 19.0 && pt.z < 1) { lo = std::min(lo, pt.z); hi = std::max(hi, pt.z); }
+        return hi - lo;
+    };
+    const int stripes0 = surface_curvature_map(build_faired_hull_surface(h, p)).long_sign_changes();
+
+    // Inspection only: nothing moves.
+    NetworkOptions off = default_network(p);
+    off.fair_girth_lines = false;
+    HullFairing h_off = h;
+    NetworkResult r0 = fair_network(h_off, off);
+    CHECK(r0.girth_lines == 0);
+    CHECK(r0.curves.size() == off.waterlines.size() + off.buttocks.size());
+    double moved_off = 0;
+    for (size_t i = 0; i < h.sections.size(); ++i)
+        for (size_t j = 0; j < h.sections[i].faired.size(); ++j)
+            moved_off = std::max(moved_off, norm(h_off.sections[i].faired[j] - h.sections[i].faired[j]));
+    CHECK(moved_off == 0.0);
+    for (auto& c : r0.curves) CHECK(c.q_faired.variation == c.q_sectioned.variation);
+
+    NetworkOptions no = default_network(p);
+    no.tolerance = 0.005;
+    no.offset_accuracy = 0.001;
+    NetworkResult r = fair_network(h, no);
+    CHECK(r.girth_lines == o.surface_points);
+    CHECK(r.straight_lines > o.surface_points / 2);
+    CHECK(r.max_move > 0.001 && r.max_move < 2 * no.tolerance);
+    // End stations (AP / FP) are kept.
+    CHECK(norm(h.sections.front().faired[5] - before.sections.front().faired[5]) == 0.0);
+    CHECK(norm(h.sections.back().faired[5] - before.sections.back().faired[5]) == 0.0);
+    // Points stay in their station planes, keel in the centre plane.
+    for (size_t i = 0; i < h.sections.size(); ++i) {
+        CHECK_NEAR(h.sections[i].faired[3].x, before.sections[i].faired[3].x, 1e-12);
+        CHECK_NEAR(h.sections[i].faired[0].y, 0.0, 0.0);
+    }
+    const double b0 = bottom_range(before), b1 = bottom_range(h);
+    CHECK(b0 > 0.002);   // the station errors show (about 3 mm)
+    CHECK(b1 < 0.001);   // straight middle body: flat again (about 0.5 mm)
+    const int stripes1 = surface_curvature_map(build_faired_hull_surface(h, p)).long_sign_changes();
+    CHECK(stripes1 * 100 < stripes0 * 85);  // about 574 -> 460
+    double v0 = 0, v1 = 0;
+    for (auto& c : r.curves) { v0 += c.q_sectioned.variation; v1 += c.q_faired.variation; }
+    CHECK(v1 < v0);
+    // The displacement is kept.
+    auto be = make_cpu_backend(4);
+    ShipRef ref{p.Lpp, p.B, p.Lpp / 2, 1.025};
+    be->upload(tessellate_hull(build_faired_hull_surface(before, p), 240, 80));
+    const double vol0 = hydrostatic_table(*be, ref, {p.T})[0].volume;
+    be->upload(tessellate_hull(build_faired_hull_surface(h, p), 240, 80));
+    CHECK(std::fabs(hydrostatic_table(*be, ref, {p.T})[0].volume / vol0 - 1.0) < 2e-4);
+
+    // Curvature map of a circular cylinder (quarter sections of radius R along x):
+    // girthwise curvature 1/R (convex: positive), longitudinal 0.
+    const double R = 4.0;
+    std::vector<std::vector<Vec3>> rows;
+    for (int i = 0; i <= 6; ++i) {
+        std::vector<Vec3> row;
+        for (int j = 0; j <= 16; ++j) {
+            const double a = 0.5 * 3.14159265358979323846 * j / 16;
+            row.push_back({2.0 * i, R * std::sin(a), R - R * std::cos(a)});
+        }
+        rows.push_back(row);
+    }
+    const CurvatureMap cm = surface_curvature_map(skin(rows, 3, 3), 20, 10);
+    double gk = 0, lk = 0;
+    for (int k = 0; k < cm.nu * cm.nv; ++k) { gk = std::max(gk, std::fabs(cm.k_girth[k] - 1.0 / R)); lk = std::max(lk, std::fabs(cm.k_long[k])); }
+    CHECK(gk < 0.01 / R);
+    CHECK(lk < 1e-6);
+    CHECK(cm.long_sign_changes() == 0);
+    CHECK_NEAR(cm.x_min, 0.0, 1e-9);
+    CHECK_NEAR(cm.x_max, 12.0, 1e-9);
+}
+
 static void test_offset_tables() {
     namespace fs = std::filesystem;
     const fs::path dir = fs::temp_directory_path();
@@ -516,9 +608,9 @@ static void test_offset_tables() {
                     if (pt.y > 0.3 && pt.y < 19.0 && pt.z < 1) { lo = std::min(lo, pt.z); hi = std::max(hi, pt.z); }
         return hi - lo;
     };
-    // Raw: about 15 mm (beyond the 1 cm flat-block test); faired: a few mm, left by fitting each
-    // station on its own (the curve-network fairing aligns stations along the ship).
-    CHECK(bottom_range(faired) < 0.005);
+    // Raw: about 15 mm (beyond the 1 cm flat-block test); faired (97 points per section): below
+    // 1 mm (with 49 points the interpolation rings about 3.5 mm where the bilge meets the flat).
+    CHECK(bottom_range(faired) < 0.0015);
     CHECK(bottom_range(tessellate_hull(build_offset_surface(hf), 240, 80)) > 0.01);
 }
 
@@ -715,6 +807,7 @@ int main() {
     test_calendar();
     test_fairing();
     test_offset_tables();
+    test_network_fairing();
     test_box_takeoff_and_utilities();
     test_tanker_division();
     test_bspline();

@@ -20,6 +20,7 @@
 #include "hullcad/cad/mesh.hpp"
 #include "hullcad/cad/offsets_io.hpp"
 #include "hullcad/fairing/fairing.hpp"
+#include "hullcad/fairing/network.hpp"
 #include "hullcad/planning/schedule.hpp"
 #include "hullcad/production/daily_load.hpp"
 #include "hullcad/production/utilities.hpp"
@@ -64,10 +65,11 @@ int main(int argc, char** argv) {
     bool run_bench = true;
     YardProfile yard;
     bool bilge_g2 = false, fair_surface = false, raw_surface = false;
+    int network = -1;  // -1: default (on for imported tables), 0 off, 1 on
     std::string offsets_file, export_offsets_file;
-    double offset_accuracy_mm = 1.0, offset_noise_mm = 0.0;
+    double offset_accuracy_mm = 1.0, offset_noise_mm = 0.0, station_error_mm = 0.0;
     int offset_points = 25;
-    double fair_tolerance_mm = 3.0;
+    double fair_tolerance_mm = 3.0, network_tolerance_mm = 5.0;
     std::vector<std::pair<std::string, std::string>> overrides;
     std::string sweep_key;
     std::vector<std::string> sweep_values;
@@ -89,6 +91,9 @@ int main(int argc, char** argv) {
                 if (b != "g1" && b != "g2") throw std::invalid_argument("--bilge expects g1 or g2");
                 bilge_g2 = b == "g2";
             } else if (a == "--fair-surface") fair_surface = true;
+            else if (a == "--network") network = 1;
+            else if (a == "--no-network") network = 0;
+            else if (a == "--network-tolerance" && i + 1 < argc) network_tolerance_mm = std::atof(argv[++i]);
             else if (a == "--fair-tolerance" && i + 1 < argc) fair_tolerance_mm = std::atof(argv[++i]);
             else if (a == "--offsets" && i + 1 < argc) offsets_file = argv[++i];
             else if (a == "--offset-accuracy" && i + 1 < argc) offset_accuracy_mm = std::atof(argv[++i]);
@@ -96,6 +101,7 @@ int main(int argc, char** argv) {
             else if (a == "--export-offsets" && i + 1 < argc) export_offsets_file = argv[++i];
             else if (a == "--offset-points" && i + 1 < argc) offset_points = std::atoi(argv[++i]);
             else if (a == "--offset-noise" && i + 1 < argc) offset_noise_mm = std::atof(argv[++i]);
+            else if (a == "--station-error" && i + 1 < argc) station_error_mm = std::atof(argv[++i]);
             else if (a == "--yard" && i + 1 < argc) yard = load_yard_profile(argv[++i], yard);
             else if (a == "--set" && i + 1 < argc) {
                 std::string kv = argv[++i];
@@ -121,9 +127,9 @@ int main(int argc, char** argv) {
                     "usage: hullcad_demo [--out DIR] [--threads N] [--no-bench]\n"
                     "                    [--yard FILE.ini] [--set section.key=value]... [--write-yard FILE.ini]\n"
                     "                    [--butts FR,FR,...] [--sweep section.key=v1,v2,...]\n"
-                    "                    [--bilge g1|g2] [--fair-surface] [--fair-tolerance MM]\n"
+                    "                    [--bilge g1|g2] [--fair-surface] [--fair-tolerance MM] [--network|--no-network] [--network-tolerance MM]\n"
                     "                    [--offsets FILE.csv [--offset-accuracy MM] [--raw-surface]]\n"
-                    "                    [--export-offsets FILE.csv [--offset-points N] [--offset-noise MM]]\n");
+                    "                    [--export-offsets FILE.csv [--offset-points N] [--offset-noise MM] [--station-error MM]]\n");
                 return 2;
             }
         }
@@ -138,9 +144,10 @@ int main(int argc, char** argv) {
 
     if (!export_offsets_file.empty()) {
         // Offset table of the parametric hull, rounded to the millimetre like a printed table.
-        write_offsets_csv(parametric_offset_table(p, offset_points, offset_noise_mm / 1000.0, 0.001), export_offsets_file);
-        std::printf("offset table (%d stations x %d points, noise +-%.1f mm) written to %s\n", p.stations, offset_points,
-                    offset_noise_mm, export_offsets_file.c_str());
+        write_offsets_csv(parametric_offset_table(p, offset_points, offset_noise_mm / 1000.0, 0.001, 1, station_error_mm / 1000.0),
+                          export_offsets_file);
+        std::printf("offset table (%d stations x %d points, noise +-%.1f mm, station error +-%.1f mm) written to %s\n", p.stations,
+                    offset_points, offset_noise_mm, station_error_mm, export_offsets_file.c_str());
         return 0;
     }
     OffsetTable table;
@@ -168,10 +175,20 @@ int main(int argc, char** argv) {
     if (imported) fo.offset_accuracy = offset_accuracy_mm / 1000.0;
     HullFairing hf = imported ? fair_offset_table(table, fo, p.points_per_section) : fair_hull_sections(p, fo);
     if (imported) fair_surface = !raw_surface;
+    if (network == 1) fair_surface = true;
+    const bool network_fair = fair_surface && (network == 1 || (network == -1 && imported));
+    NetworkOptions no = default_network(p);
+    no.tolerance = network_tolerance_mm / 1000.0;
+    no.offset_accuracy = fo.offset_accuracy;
+    no.fair_girth_lines = network_fair;
+    const int stripes_before = surface_curvature_map(fair_surface ? build_faired_hull_surface(hf, p) : build_offset_surface(hf))
+                                   .long_sign_changes();
+    const NetworkResult net = fair_network(hf, no);
     BSplineSurface S = fair_surface ? build_faired_hull_surface(hf, p) : build_offset_surface(hf);
     TriMesh mesh = tessellate_hull(S, 240, 80);
     std::printf("Hull surface: bicubic B-spline, %d x %d control points (from %zu stations x %d points, %s sections)\n",
-                S.nu, S.nv, hf.sections.size(), p.points_per_section, fair_surface ? "faired" : "unfaired");
+                S.nu, S.nv, hf.sections.size(), fair_surface ? fo.surface_points : p.points_per_section,
+                fair_surface ? "faired" : "unfaired");
     std::printf("Mesh: %zu triangles, closed+consistent: %s  (built in %.3f s)\n", mesh.tris.size(),
                 is_closed_and_consistent(mesh) ? "yes" : "NO", seconds_since(t0));
 
@@ -247,6 +264,24 @@ int main(int argc, char** argv) {
             std::printf("  %8.1f %9.1f %5d -> %-4d %6.3f -> %-6.3f  %s\n", sc.x, sc.max_deviation * 1000, sc.q_before.inflections,
                         sc.q_composite.inflections, sc.q_before.energy, sc.q_composite.energy, sc.ok ? "faired" : "not applicable");
         }
+    }
+
+    {
+        const int stripes = surface_curvature_map(S).long_sign_changes();
+        if (net.girth_lines > 0)
+            std::printf("\n== Curve network (girth lines faired, tolerance %.1f mm) ==\n", network_tolerance_mm);
+        else
+            std::printf("\n== Curve network (inspection only) ==\n");
+        if (net.girth_lines > 0)
+            std::printf("%d girth lines (%d with a straight middle body), largest section point move %.1f mm\n", net.girth_lines,
+                        net.straight_lines, net.max_move * 1000);
+        std::printf("surface longitudinal curvature sign changes: %d%s\n", net.girth_lines > 0 ? stripes_before : stripes,
+                    net.girth_lines > 0 ? (" -> " + std::to_string(stripes)).c_str() : "");
+        std::printf("  %-10s %6s %24s %28s\n", "curve", "points", "inflections raw/sec/net", "curvature variation raw/sec/net");
+        for (auto& c : net.curves)
+            std::printf("  %-10s %6zu %8d %6d %6d %12.3f %8.3f %8.3f\n", c.name().c_str(), c.sectioned.size(), c.q_raw.inflections,
+                        c.q_sectioned.inflections, c.q_faired.inflections, c.q_raw.variation, c.q_sectioned.variation,
+                        c.q_faired.variation);
     }
 
     // Block division: structure layout -> per-zone steel weights -> butts (auto or manual) -> checks.

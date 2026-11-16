@@ -24,6 +24,10 @@ int main(int argc, char** argv) {
     QCommandLineOption offsets(QStringLiteral("offsets"), QStringLiteral("Build the hull from an offset table (.csv)."),
                                QStringLiteral("file"));
     cli.addOption(offsets);
+    QCommandLineOption network(QStringLiteral("network"),
+                               QStringLiteral("Curve-network (girth-line) fairing on or off (default: on for offset tables)."),
+                               QStringLiteral("on|off"));
+    cli.addOption(network);
     cli.addOption(yard);
     cli.addOption(shots);
     cli.process(app);
@@ -33,6 +37,7 @@ int main(int argc, char** argv) {
     if (cli.isSet(shots)) w.setScreenshotDir(cli.value(shots));
     if (cli.isSet(bilge)) w.setBilgeG2(cli.value(bilge).toLower() == QStringLiteral("g2"));
     if (cli.isSet(offsets) && !w.loadOffsets(cli.value(offsets))) return 1;
+    if (cli.isSet(network)) w.setNetworkFairing(cli.value(network).toLower() != QStringLiteral("off"));
     w.show();
     w.start();
     return app.exec();
