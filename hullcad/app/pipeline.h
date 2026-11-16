@@ -7,6 +7,7 @@
 
 #include "hullcad/production_design/blocks.hpp"
 #include "hullcad/cad/hull_param.hpp"
+#include "hullcad/fairing/fairing.hpp"
 #include "hullcad/naval/hydrostatics.hpp"
 #include "hullcad/cad/mesh.hpp"
 #include "hullcad/planning/schedule.hpp"
@@ -26,6 +27,8 @@ struct HullRun {
     std::vector<GZPoint> gz;
     std::string lines_svg;
     TankVolumes tanks;                // cargo / ballast tank volumes (tank-test utilities)
+    HullFairing fairing;              // section fairing analysis (always computed)
+    bool faired_surface = false;      // surface built from the faired sections
     double seconds = 0;
     std::string error;                // non-empty: the run failed
 };
@@ -46,7 +49,8 @@ struct DivisionRun {
 };
 
 // Hull surface, mesh, hydrostatic table, GZ curve (fixed trim) and lines plan.
-HullRun run_hull(const TankerParams& p, double KG, int threads);
+HullRun run_hull(const TankerParams& p, double KG, int threads, const FairingOptions& fairing = {},
+                 bool faired_surface = false);
 // GZ curve only, on an existing hull.
 std::vector<GZPoint> run_gz(const HullRun& hull, double KG, int threads);
 // Structure, weight model and block division (automatic if manual_frames is empty).

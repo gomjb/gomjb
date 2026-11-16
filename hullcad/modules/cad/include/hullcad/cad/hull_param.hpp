@@ -34,6 +34,9 @@ struct TankerParams {
     double xi_cutup_end = 0.09;
     double forefoot_rise = 2.5;                // m, keel rise at FP
 
+    double n_mid = 2.0;    // bilge corner exponent in the parallel middle body: 2 = circular bilge
+                           // (curvature jumps 0 -> 1/R at the flat of bottom/side, G1);
+                           // > 2 starts and ends with zero curvature (G2 with the flats)
     double n_aft = 1.55;   // super-ellipse exponent at AP (smaller = more V-shaped)
     double n_fwd = 2.6;    // super-ellipse exponent at FP (larger = fuller U)
 
@@ -52,6 +55,10 @@ struct SectionShape {
 };
 
 SectionShape section_at(const TankerParams& p, double x);
+// Midship bilge corner extent: bilge_radius for a circular bilge; for n_mid != 2 the size that
+// removes the same section area (n_mid = 4: curvature and its rate of change are zero where the
+// bilge meets the flats, so the section is curvature-continuous).
+double bilge_corner_size(const TankerParams& p);
 // Points from keel centreline (y = 0) to deck edge (z = D), equally spaced in girth.
 std::vector<Vec3> section_points(const SectionShape& s, double x, double D, int npts);
 // Station x-positions, clustered toward the ends.

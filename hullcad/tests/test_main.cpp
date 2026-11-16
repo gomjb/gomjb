@@ -11,7 +11,9 @@
 #include "hullcad/naval/compute_backend.hpp"
 #include "hullcad/cad/hull_param.hpp"
 #include "hullcad/naval/hydrostatics.hpp"
+#include "hullcad/cad/lines_plan.hpp"
 #include "hullcad/cad/mesh.hpp"
+#include "hullcad/fairing/fairing.hpp"
 #include "hullcad/planning/schedule.hpp"
 #include "hullcad/production/daily_load.hpp"
 #include "hullcad/production/utilities.hpp"
@@ -297,6 +299,131 @@ static void test_box_takeoff_and_utilities() {
     CHECK_NEAR(v.ballast_m3, (p.B * p.D - (p.B - 4) * (p.D - 2)) * 40, 1e-6);
 }
 
+// Deterministic +-amp noise added to the interior points (measured / entered offsets).
+static std::vector<Vec3> with_noise(std::vector<Vec3> pts, double amp, unsigned seed) {
+    for (size_t i = 1; i + 1 < pts.size(); ++i) {
+        seed = seed * 1664525u + 1013904223u;
+        const double a = ((seed >> 8) / 16777216.0 - 0.5) * 2;
+        seed = seed * 1664525u + 1013904223u;
+        const double b = ((seed >> 8) / 16777216.0 - 0.5) * 2;
+        pts[i].y += a * amp;
+        pts[i].z += b * amp;
+    }
+    return pts;
+}
+
+static void test_fairing() {
+    // 1. Noisy quarter circle: fairing removes the bumps, stays within tolerance, keeps 1/R.
+    const double R = 3.0;
+    std::vector<Vec3> arc;
+    for (int i = 0; i <= 30; ++i) {
+        const double t = 1.5707963267948966 * i / 30;
+        arc.push_back({0, R * std::sin(t), R - R * std::cos(t)});
+    }
+    auto noisy = with_noise(arc, 0.002, 7);
+    FairingOptions o;
+    o.tolerance = 0.004;
+    o.offset_accuracy = 0.002;
+    FairedCurve fc = fair_curve(noisy, o);
+    CHECK(fc.max_deviation <= o.tolerance + 1e-9);
+    CHECK(curve_quality(curvature_samples(interpolate(noisy, 3), 600)).inflections > 5);
+    CHECK(curve_quality(curvature_samples(fc, 600)).inflections == 0);
+    auto ks = curvature_samples(fc, 101);
+    for (int i = 20; i <= 80; ++i) CHECK_NEAR(ks[i].kappa, 1.0 / R, 0.05 / R);
+
+    // 2. A 49-point midship offset table (flat + circular bilge + flat side) with +-1 mm noise:
+    //    straight runs found on their least-squares lines, bilge faired, no inflections.
+    TankerParams p;
+    const double x = 119.5;
+    auto table = section_points(section_at(p, x), x, p.D, 49);
+    auto table_noisy = with_noise(table, 0.001, 99);
+    FairingOptions so;
+    so.junction_continuity = 1;
+    so.offset_accuracy = 0.001;
+    so.start_tangent = {0, 1, 0};
+    so.end_tangent = {0, 0, 1};
+    FairedCurve sec = fair_curve(table_noisy, so);
+    CHECK(sec.max_deviation <= so.tolerance + 1e-9);
+    CHECK(curve_quality(curvature_samples(interpolate(table_noisy, 3), 1200)).inflections > 10);
+    CHECK(curve_quality(curvature_samples(sec, 1200)).inflections == 0);
+    CHECK(std::fabs(sec.lead_a.z) < 0.001 && std::fabs(sec.lead_b.z) < 0.001);    // flat of bottom
+    CHECK(std::fabs(sec.tail_a.y - 22.0) < 0.001 && std::fabs(sec.tail_b.y - 22.0) < 0.001);  // flat of side
+
+    // 3. Exact offsets, G1: the flat runs end at the bilge tangent points (y = B/2 - R, z = R).
+    FairingOptions exact = so;
+    exact.offset_accuracy = 0;
+    auto dense = section_points(section_at(p, x), x, p.D, 481);
+    FairedCurve g1 = fair_curve(dense, exact);
+    CHECK(g1.max_deviation <= so.tolerance + 1e-9);
+    CHECK(std::fabs(g1.lead_b.y - (22.0 - 2.4)) < 0.12);
+    CHECK(std::fabs(g1.tail_a.z - 2.4) < 0.12);
+    CHECK_NEAR(g1.lead_b.z, 0.0, 1e-4);  // flat within 0.1 mm
+
+    // 4. Curvature-continuous bilge (n_mid = 4), G2: curvature rises from zero, no inflections.
+    TankerParams p4;
+    p4.n_mid = 4.0;
+    FairingOptions g2o = so;
+    g2o.junction_continuity = 2;
+    g2o.offset_accuracy = 0;  // exact offsets
+    FairedCurve g2 = fair_curve(section_points(section_at(p4, x), x, p4.D, 481), g2o);
+    CHECK(g2.max_deviation <= g2o.tolerance + 1e-9);
+    auto k2 = curvature_samples(g2.curve, 400);
+    CHECK(std::fabs(k2.front().kappa) < 0.01 && std::fabs(k2.back().kappa) < 0.01);
+    CHECK(curve_quality(curvature_samples(g2, 1200)).inflections == 0);
+
+    // 5. Without a straight run the start tangent is honoured (V section aft: horizontal at keel).
+    const double xa = 20.0;
+    FairedCurve v = fair_curve(section_points(section_at(p, xa), xa, p.D, 481), exact);
+    Vec3 dv[3];
+    v.curve.derivs(v.curve.umin(), 1, dv);
+    if (norm(v.lead_b - v.lead_a) < 1e-9) CHECK_NEAR(std::fabs(normalize(dv[1]).y), 1.0, 1e-9);
+
+    // 6. The n_mid = 4 bilge removes the same section area as the circular one.
+    auto area = [&](const TankerParams& q) {
+        auto pts = section_points(section_at(q, x), x, q.D, 4001);
+        pts.push_back({x, 0.0, q.D});
+        double a = 0;
+        for (size_t i = 0; i < pts.size(); ++i) {
+            const Vec3& u = pts[i];
+            const Vec3& w = pts[(i + 1) % pts.size()];
+            a += u.y * w.z - w.y * u.z;
+        }
+        return std::fabs(a) / 2;
+    };
+    CHECK_NEAR(bilge_corner_size(p), p.bilge_radius, 0.0);
+    CHECK_NEAR(area(p4), area(p), 1e-3);
+
+    // 7. Hull: the curvature-continuous bilge removes the flat-bottom ripple of the surface.
+    auto ripple = [&](const TriMesh& m, const TankerParams& q) {
+        const double fob = q.B / 2 - bilge_corner_size(q);
+        double r = 0;
+        for (double xx : {100.0, 140.0}) {
+            double lo = 1e9, hi = -1e9;
+            for (auto& g : slice(m, 0, xx))
+                for (auto& pt : {g.first, g.second})
+                    if (pt.y > 0.3 && pt.y < fob - 0.5 && pt.z < 1) { lo = std::min(lo, pt.z); hi = std::max(hi, pt.z); }
+            r = std::max(r, hi - lo);
+        }
+        return r;
+    };
+    const double r2 = ripple(tessellate_hull(build_hull_surface(p), 240, 80), p);
+    const double r4 = ripple(tessellate_hull(build_hull_surface(p4), 240, 80), p4);
+    CHECK(r2 > 3e-4);
+    CHECK(r4 < 1e-4);
+
+    // 8. All stations but the stem fair within tolerance; midship has no inflection.
+    HullFairing hf = fair_hull_sections(p, exact);
+    FairingSummary sm = summarize(hf);
+    CHECK(sm.stations == p.stations);
+    CHECK(sm.not_applicable <= 1);
+    int within = 0;
+    for (auto& sec_i : hf.sections) within += sec_i.max_deviation <= exact.tolerance + 1e-9;
+    CHECK(within >= p.stations - 1);
+    CHECK(sm.max_deviation <= 2 * exact.tolerance);
+    CHECK(hf.sections[p.stations / 2].q_composite.inflections == 0);
+    CHECK(!hf.sections.back().ok || hf.sections.back().max_deviation <= 2 * so.tolerance);
+}
+
 static void test_calendar() {
     CHECK(days_from_date("1970-01-01") == 0);
     CHECK(days_from_date("2027-03-02") == 20879);
@@ -488,6 +615,7 @@ int main() {
     test_box_block_weights();
     test_yard_profile();
     test_calendar();
+    test_fairing();
     test_box_takeoff_and_utilities();
     test_tanker_division();
     test_bspline();

@@ -109,7 +109,7 @@ std::vector<std::tuple<std::string, double, double>> breadth_bands(const Product
 
 std::vector<Zone> default_cargo_zones(const TankerParams& p, const TankerStructure& st, const ProductionDesignSettings& y) {
     const double off = y.division.seam_offset;
-    const double a = std::min(0.5 * p.B - st.double_side, 0.5 * p.B - p.bilge_radius) - off;
+    const double a = std::min(0.5 * p.B - st.double_side, 0.5 * p.B - bilge_corner_size(p)) - off;
     const double zdb = st.double_bottom + off;
     const double zdk = p.D - y.division.deck_zone_depth;
     const auto bands = breadth_bands(y, off, a);

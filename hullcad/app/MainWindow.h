@@ -14,7 +14,10 @@ class QPushButton;
 class QTabWidget;
 class QTableWidget;
 class QTextBrowser;
+class CombPlot;
 class DailyPlot;
+class QCheckBox;
+class QSpinBox;
 class GzPlot;
 class SvgView;
 class YardForm;
@@ -29,6 +32,7 @@ public:
     // Test/documentation aid: after the first division, save one PNG per tab and quit.
     void setScreenshotDir(const QString& dir) { screenshotDir_ = dir; }
     void start();
+    void setBilgeG2(bool g2);
 
 private slots:
     void runHull();
@@ -61,6 +65,13 @@ private:
     QTabWidget* tabs_ = nullptr;
     // Hull tab
     QVector<QDoubleSpinBox*> hullSpins_;
+    QComboBox* bilgeCombo_ = nullptr;
+    QDoubleSpinBox* fairTolSpin_ = nullptr;
+    QCheckBox* fairSurfaceCheck_ = nullptr;
+    QLabel* fairSummary_ = nullptr;
+    QSpinBox* stationSpin_ = nullptr;
+    CombPlot* combPlot_ = nullptr;
+    QTableWidget* fairTable_ = nullptr;
     QPushButton* hullButton_ = nullptr;
     QTextBrowser* particulars_ = nullptr;
     SvgView* linesView_ = nullptr;

@@ -18,6 +18,7 @@
 #include "hullcad/naval/hydrostatics.hpp"
 #include "hullcad/cad/lines_plan.hpp"
 #include "hullcad/cad/mesh.hpp"
+#include "hullcad/fairing/fairing.hpp"
 #include "hullcad/planning/schedule.hpp"
 #include "hullcad/production/daily_load.hpp"
 #include "hullcad/production/utilities.hpp"
@@ -61,6 +62,8 @@ int main(int argc, char** argv) {
     int threads = 0;
     bool run_bench = true;
     YardProfile yard;
+    bool bilge_g2 = false, fair_surface = false;
+    double fair_tolerance_mm = 3.0;
     std::vector<std::pair<std::string, std::string>> overrides;
     std::string sweep_key;
     std::vector<std::string> sweep_values;
@@ -77,6 +80,12 @@ int main(int argc, char** argv) {
             if (a == "--out" && i + 1 < argc) outdir = argv[++i];
             else if (a == "--threads" && i + 1 < argc) threads = std::atoi(argv[++i]);
             else if (a == "--no-bench") run_bench = false;
+            else if (a == "--bilge" && i + 1 < argc) {
+                std::string b = argv[++i];
+                if (b != "g1" && b != "g2") throw std::invalid_argument("--bilge expects g1 or g2");
+                bilge_g2 = b == "g2";
+            } else if (a == "--fair-surface") fair_surface = true;
+            else if (a == "--fair-tolerance" && i + 1 < argc) fair_tolerance_mm = std::atof(argv[++i]);
             else if (a == "--yard" && i + 1 < argc) yard = load_yard_profile(argv[++i], yard);
             else if (a == "--set" && i + 1 < argc) {
                 std::string kv = argv[++i];
@@ -101,7 +110,8 @@ int main(int argc, char** argv) {
                 std::printf(
                     "usage: hullcad_demo [--out DIR] [--threads N] [--no-bench]\n"
                     "                    [--yard FILE.ini] [--set section.key=value]... [--write-yard FILE.ini]\n"
-                    "                    [--butts FR,FR,...] [--sweep section.key=v1,v2,...]\n");
+                    "                    [--butts FR,FR,...] [--sweep section.key=v1,v2,...]\n"
+                    "                    [--bilge g1|g2] [--fair-surface] [--fair-tolerance MM]\n");
                 return 2;
             }
         }
@@ -112,11 +122,17 @@ int main(int argc, char** argv) {
     std::filesystem::create_directories(outdir);
 
     TankerParams p;
+    if (bilge_g2) p.n_mid = 4.0;
     ShipRef ref{p.Lpp, p.B, 0.5 * p.Lpp, 1.025};
 
     auto t0 = std::chrono::steady_clock::now();
     auto rows = offsets(p);
-    BSplineSurface S = skin(rows, 3, 3);
+    // Section fairing (always analysed; the surface uses the faired sections on request).
+    FairingOptions fo;
+    fo.tolerance = fair_tolerance_mm / 1000.0;
+    fo.junction_continuity = p.n_mid > 2.5 ? 2 : 1;
+    HullFairing hf = fair_hull_sections(p, fo);
+    BSplineSurface S = fair_surface ? build_faired_hull_surface(hf, p) : skin(rows, 3, 3);
     TriMesh mesh = tessellate_hull(S, 240, 80);
     std::printf("Hull surface: bicubic B-spline, %d x %d control points (from %zu stations x %d points)\n",
                 S.nu, S.nv, rows.size(), p.points_per_section);
@@ -182,6 +198,22 @@ int main(int argc, char** argv) {
     write_lines_plan_svg(mesh, spec, outdir + "/lines.svg");
     write_obj(mesh, outdir + "/hull.obj");
     std::printf("Lines plan -> %s/lines.svg, mesh -> %s/hull.obj\n", outdir.c_str(), outdir.c_str());
+
+    {
+        const FairingSummary fs = summarize(hf);
+        std::printf("\n== Section fairing (%s bilge, %s joints, tolerance %.1f mm, surface from %s sections) ==\n",
+                    p.n_mid > 2.5 ? "curvature-continuous" : "circular", fo.junction_continuity >= 2 ? "G2" : "G1",
+                    fair_tolerance_mm, fair_surface ? "faired" : "design");
+        std::printf("%d stations, %d faired, %d not applicable; max deviation %.1f mm; inflections %d -> %d\n", fs.stations,
+                    fs.stations - fs.not_applicable, fs.not_applicable, fs.max_deviation * 1000, fs.inflections_before,
+                    fs.inflections_faired);
+        std::printf("  %8s %9s %12s %14s  %s\n", "x", "dev mm", "inflections", "energy", "status");
+        for (size_t i = 0; i < hf.sections.size(); i += 5) {
+            const auto& sc = hf.sections[i];
+            std::printf("  %8.1f %9.1f %5d -> %-4d %6.3f -> %-6.3f  %s\n", sc.x, sc.max_deviation * 1000, sc.q_before.inflections,
+                        sc.q_composite.inflections, sc.q_before.energy, sc.q_composite.energy, sc.ok ? "faired" : "not applicable");
+        }
+    }
 
     // Block division: structure layout -> per-zone steel weights -> butts (auto or manual) -> checks.
     {

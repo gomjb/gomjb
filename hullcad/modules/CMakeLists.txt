@@ -2,6 +2,7 @@
 # modules it links to, so the dependency direction below is enforced by the compiler:
 #
 #   core <- cad <- naval
+#           cad <- fairing
 #           cad <- structure <- production_design <- planning <- production <- project
 #                         yard <- production_design
 #
@@ -36,6 +37,11 @@ hullcad_module(core
 hullcad_module(cad
   SOURCES cad/src/bspline.cpp cad/src/hull_param.cpp cad/src/mesh.cpp cad/src/lines_plan.cpp
   DEPS hullcad::core)
+
+# 선형 순정: penalised curve fairing, curvature analysis, faired hull sections
+hullcad_module(fairing
+  SOURCES fairing/src/fairing.cpp
+  DEPS hullcad::cad hullcad::core)
 
 # 선박 계산: hydrostatics and stability on multithreaded CPU / CUDA backends
 hullcad_module(naval
@@ -77,5 +83,5 @@ hullcad_module(project
 
 add_library(hullcad INTERFACE)
 target_link_libraries(hullcad INTERFACE
-  hullcad::core hullcad::cad hullcad::naval hullcad::structure hullcad::yard
+  hullcad::core hullcad::cad hullcad::fairing hullcad::naval hullcad::structure hullcad::yard
   hullcad::production_design hullcad::planning hullcad::production hullcad::project)

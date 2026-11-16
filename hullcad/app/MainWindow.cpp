@@ -1,7 +1,9 @@
 #include "MainWindow.h"
 
 #include <QApplication>
+#include <QCheckBox>
 #include <QComboBox>
+#include <QSpinBox>
 #include <QDir>
 #include <QDoubleSpinBox>
 #include <QFile>
@@ -29,6 +31,7 @@
 #include <QtConcurrent/QtConcurrentRun>
 #include <stdexcept>
 
+#include "CombPlot.h"
 #include "DailyPlot.h"
 #include "GzPlot.h"
 #include "SvgView.h"
@@ -131,6 +134,8 @@ int MainWindow::threads() const { return std::max(1, QThread::idealThreadCount()
 
 void MainWindow::start() { runHull(); }
 
+void MainWindow::setBilgeG2(bool g2) { bilgeCombo_->setCurrentIndex(g2 ? 1 : 0); }
+
 QWidget* MainWindow::buildHullTab() {
     auto* split = new QSplitter(Qt::Horizontal);
     auto* left = new QWidget;
@@ -149,6 +154,25 @@ QWidget* MainWindow::buildHullTab() {
         hullSpins_.push_back(s);
     }
     lv->addWidget(box);
+    auto* fbox = new QGroupBox(tr("빌지 형상 · 단면 순정"));
+    auto* fform = new QFormLayout(fbox);
+    bilgeCombo_ = new QComboBox;
+    bilgeCombo_->addItem(tr("원호 빌지 (G1: 곡률이 0 → 1/R로 점프)"));
+    bilgeCombo_->addItem(tr("곡률 연속 빌지 (G2: n = 4, 같은 단면적)"));
+    bilgeCombo_->setToolTip(tr("곡률 연속 빌지는 평저·평측과 만나는 곳에서 곡률이 0부터 서서히 커집니다.\n"
+                               "원호 빌지와 같은 단면적을 빼도록 크기를 맞춥니다."));
+    fform->addRow(tr("빌지"), bilgeCombo_);
+    fairTolSpin_ = new QDoubleSpinBox;
+    fairTolSpin_->setRange(0.5, 50);
+    fairTolSpin_->setDecimals(1);
+    fairTolSpin_->setSuffix(QStringLiteral(" mm"));
+    fairTolSpin_->setValue(3.0);
+    fform->addRow(tr("순정 허용 오차"), fairTolSpin_);
+    fairSurfaceCheck_ = new QCheckBox(tr("순정 단면으로 곡면 생성"));
+    fairSurfaceCheck_->setToolTip(tr("파라메트릭 선형처럼 오차 없는 단면은 원래 단면으로 곡면을 만드는 편이 더 정확합니다.\n"
+                                     "측정·입력 오차가 있는 오프셋에 사용하세요."));
+    fform->addRow(QString(), fairSurfaceCheck_);
+    lv->addWidget(fbox);
     hullButton_ = new QPushButton(tr("선형 생성 · 계산"));
     hullButton_->setDefault(true);
     connect(hullButton_, &QPushButton::clicked, this, &MainWindow::runHull);
@@ -156,8 +180,49 @@ QWidget* MainWindow::buildHullTab() {
     particulars_ = new QTextBrowser;
     lv->addWidget(particulars_, 1);
     split->addWidget(left);
+    auto* right = new QTabWidget;
+    right->setObjectName(QStringLiteral("innerTabs"));
     linesView_ = new SvgView;
-    split->addWidget(linesView_);
+    right->addTab(linesView_, tr("선도"));
+
+    auto* fw = new QWidget;
+    auto* fv = new QVBoxLayout(fw);
+    fairSummary_ = new QLabel;
+    fairSummary_->setWordWrap(true);
+    fv->addWidget(fairSummary_);
+    auto* row = new QHBoxLayout;
+    row->addWidget(new QLabel(tr("스테이션")));
+    stationSpin_ = new QSpinBox;
+    connect(stationSpin_, &QSpinBox::valueChanged, this, [this](int i) {
+        if (!hull_ || i < 0 || i >= static_cast<int>(hull_->fairing.sections.size())) return;
+        combPlot_->setSection(hull_->fairing.sections[i]);
+        fairTable_->selectRow(i);
+    });
+    row->addWidget(stationSpin_);
+    auto* showBefore = new QCheckBox(tr("순정 전"));
+    showBefore->setChecked(true);
+    connect(showBefore, &QCheckBox::toggled, this, [this](bool on) { combPlot_->setShowBefore(on); });
+    auto* showAfter = new QCheckBox(tr("순정 후"));
+    showAfter->setChecked(true);
+    connect(showAfter, &QCheckBox::toggled, this, [this](bool on) { combPlot_->setShowAfter(on); });
+    row->addWidget(showBefore);
+    row->addWidget(showAfter);
+    row->addWidget(new QLabel(tr("휠: 확대 · 드래그: 이동 · 더블클릭: 맞춤")));
+    row->addStretch(1);
+    fv->addLayout(row);
+    auto* fsplit = new QSplitter(Qt::Vertical);
+    combPlot_ = new CombPlot;
+    fsplit->addWidget(combPlot_);
+    fairTable_ = new QTableWidget;
+    setupTable(fairTable_, {tr("스테이션"), tr("x (m)"), tr("최대 편차 (mm)"), tr("변곡점 순정 전"), tr("변곡점 순정 후"),
+                            tr("곡률 변화 에너지 전"), tr("곡률 변화 에너지 후"), tr("상태")});
+    fairTable_->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
+    connect(fairTable_, &QTableWidget::cellClicked, this, [this](int r, int) { stationSpin_->setValue(r); });
+    fsplit->addWidget(fairTable_);
+    fsplit->setSizes({560, 260});
+    fv->addWidget(fsplit, 1);
+    right->addTab(fw, tr("단면 순정 (곡률 콤)"));
+    split->addWidget(right);
     split->setStretchFactor(1, 3);
     split->setSizes({360, 1100});
     return split;
@@ -501,6 +566,7 @@ void MainWindow::buildMenus() {
 TankerParams MainWindow::hullParams() const {
     TankerParams p;
     for (int i = 0; i < hullSpins_.size(); ++i) p.*(kHullFields[i].member) = hullSpins_[i]->value();
+    p.n_mid = bilgeCombo_->currentIndex() == 1 ? 4.0 : 2.0;
     return p;
 }
 
@@ -512,7 +578,11 @@ void MainWindow::runHull() {
     const TankerParams p = hullParams();
     const double KG = kgSpin_->value();
     const int n = threads();
-    hullWatch_.setFuture(QtConcurrent::run([p, KG, n] { return run_hull(p, KG, n); }));
+    FairingOptions fo;
+    fo.tolerance = fairTolSpin_->value() / 1000.0;
+    fo.junction_continuity = p.n_mid > 2.5 ? 2 : 1;  // G2 joints only where the design bilge is G2
+    const bool fair_surface = fairSurfaceCheck_->isChecked();
+    hullWatch_.setFuture(QtConcurrent::run([p, KG, n, fo, fair_surface] { return run_hull(p, KG, n, fo, fair_surface); }));
 }
 
 void MainWindow::onHullDone() {
@@ -561,6 +631,40 @@ void MainWindow::showHull(const HullRun& h) {
         for (int c = 0; c < 12; ++c) hydroTable_->setItem(r, c, num(vals[c], dec[c]));
     }
     gzPlot_->setCurve(h.gz, d.KM_T - h.KG);
+
+    // Section fairing.
+    const auto& secs = h.fairing.sections;
+    const FairingSummary fs = summarize(h.fairing);
+    fairSummary_->setText(
+        tr("스테이션 %1개 · 순정 적용 %2개 (적용 불가 %3개: 선수재처럼 바닥 반경이 수 mm인 단면) · 최대 편차 %4 mm (허용 %5 mm) · "
+           "변곡점 합계 %6 → %7 · 접속 조건 %8 · 곡면: %9%10")
+            .arg(fs.stations).arg(fs.stations - fs.not_applicable).arg(fs.not_applicable)
+            .arg(fs.max_deviation * 1000, 0, 'f', 1).arg(h.fairing.options.tolerance * 1000, 0, 'f', 1)
+            .arg(fs.inflections_before).arg(fs.inflections_faired)
+            .arg(h.fairing.options.junction_continuity >= 2 ? tr("G2 (곡률 연속)") : tr("G1 (접선 연속)"))
+            .arg(h.faired_surface ? tr("순정 단면 사용") : tr("원래 단면 사용"))
+            .arg(h.params.n_mid > 2.5 ? QString()
+                                      : tr("<br><span style='color:#8a5a00'>원호 빌지는 평저·평측과 만나는 곳에서 곡률이 0 → 1/R로 계단처럼 뜁니다(G1). "
+                                           "순정은 이 계단을 설계대로 유지하므로 곡률 변화 에너지가 큽니다. 2차 미분까지 매끄럽게 하려면 "
+                                           "'곡률 연속 빌지 (G2)'를 선택하세요.</span>")));
+    fairTable_->setRowCount(static_cast<int>(secs.size()));
+    for (int i = 0; i < static_cast<int>(secs.size()); ++i) {
+        const auto& sc = secs[i];
+        fairTable_->setItem(i, 0, num(i, 0));
+        fairTable_->setItem(i, 1, num(sc.x, 1));
+        fairTable_->setItem(i, 2, num(sc.max_deviation * 1000, 1));
+        fairTable_->setItem(i, 3, num(sc.q_before.inflections, 0));
+        fairTable_->setItem(i, 4, num(sc.q_composite.inflections, 0));
+        fairTable_->setItem(i, 5, num(sc.q_before.energy, 3));
+        fairTable_->setItem(i, 6, num(sc.q_composite.energy, 3));
+        fairTable_->setItem(i, 7, text(sc.ok ? tr("순정") : tr("적용 불가 (오프셋 유지)")));
+        if (!sc.ok)
+            for (int c = 0; c < fairTable_->columnCount(); ++c) fairTable_->item(i, c)->setForeground(QColor(0xb0, 0x00, 0x20));
+    }
+    stationSpin_->setRange(0, std::max(0, static_cast<int>(secs.size()) - 1));
+    const int mid = static_cast<int>(secs.size()) / 2;
+    if (stationSpin_->value() == mid && !secs.empty()) combPlot_->setSection(secs[mid]);
+    stationSpin_->setValue(mid);
 }
 
 void MainWindow::runGz() {

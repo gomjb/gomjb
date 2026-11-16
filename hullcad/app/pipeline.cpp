@@ -26,13 +26,15 @@ std::vector<double> gz_heels() {
 
 }  // namespace
 
-HullRun run_hull(const TankerParams& p, double KG, int threads) {
+HullRun run_hull(const TankerParams& p, double KG, int threads, const FairingOptions& fairing, bool faired_surface) {
     HullRun r;
     r.params = p;
     r.KG = KG;
+    r.faired_surface = faired_surface;
     const auto t0 = std::chrono::steady_clock::now();
     try {
-        BSplineSurface S = build_hull_surface(p);
+        r.fairing = fair_hull_sections(p, fairing);
+        BSplineSurface S = faired_surface ? build_faired_hull_surface(r.fairing, p) : build_hull_surface(p);
         r.mesh = tessellate_hull(S, 240, 80);
         auto be = make_cpu_backend(threads);
         be->upload(r.mesh);

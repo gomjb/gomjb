@@ -17,6 +17,13 @@ double smoother(double a, double b, double xi) {
 
 }  // namespace
 
+double bilge_corner_size(const TankerParams& p) {
+    if (std::fabs(p.n_mid - 2.0) < 1e-12) return p.bilge_radius;
+    // Area outside a super-ellipse quadrant of size R: R^2 (1 - G(1+1/n)^2 / G(1+2/n)).
+    auto removed = [](double n) { return 1.0 - std::pow(std::tgamma(1.0 + 1.0 / n), 2) / std::tgamma(1.0 + 2.0 / n); };
+    return p.bilge_radius * std::sqrt(removed(2.0) / removed(p.n_mid));
+}
+
 SectionShape section_at(const TankerParams& p, double x) {
     const double xi = x / p.Lpp;
     const double hb = 0.5 * p.B;
@@ -36,8 +43,9 @@ SectionShape section_at(const TankerParams& p, double x) {
     s.zk = p.stern_cutup_height * (1.0 - smoother(0.0, p.xi_cutup_end, xi)) +
            p.forefoot_rise * smoother(0.965, 1.0, xi);
 
-    // Flat of bottom.
-    const double R = p.bilge_radius;
+    // Flat of bottom. A non-circular midship bilge (n_mid != 2) is scaled so that it removes the
+    // same section area as a circular bilge of radius bilge_radius.
+    const double R = bilge_corner_size(p);
     double fob = smoother(p.xi_fob_aft, p.xi_pmb_aft, xi) * (1.0 - smoother(p.xi_bow_corner - 0.04, p.xi_fob_fwd, xi));
     s.fb = std::max(0.0, std::min((hb - R) * fob, s.b - R));
 
@@ -46,7 +54,7 @@ SectionShape section_at(const TankerParams& p, double x) {
     double w_end = std::max(std::pow(wa, 0.8), wfc);
     s.rz = R + (p.D - s.zk - R) * w_end;
     s.ry = s.b - s.fb;
-    s.n = 2.0 + (p.n_aft - 2.0) * wa + (p.n_fwd - 2.0) * wfc;
+    s.n = p.n_mid + (p.n_aft - p.n_mid) * wa + (p.n_fwd - p.n_mid) * wfc;
     return s;
 }
 
