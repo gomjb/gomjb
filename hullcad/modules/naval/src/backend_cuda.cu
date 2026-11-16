@@ -15,13 +15,11 @@
 
 namespace hullcad {
 
-namespace {
+// Named namespace, not an anonymous one: for a kernel with internal linkage nvcc's generated
+// host stub redeclares an extern function static (MSVC C4211).
+namespace cuda_detail {
 
 constexpr int kThreads = 256;
-
-void check(cudaError_t e, const char* what) {
-    if (e != cudaSuccess) throw std::runtime_error(std::string(what) + ": " + cudaGetErrorString(e));
-}
 
 __global__ void hydro_kernel(const Vec3* __restrict__ tris, int ntri, const WaterPlane* __restrict__ planes,
                              HydroAccum* __restrict__ out) {
@@ -39,6 +37,17 @@ __global__ void hydro_kernel(const Vec3* __restrict__ tris, int ntri, const Wate
         __syncthreads();
     }
     if (threadIdx.x == 0) out[blockIdx.x] = sh[0];
+}
+
+}  // namespace cuda_detail
+
+namespace {
+
+using cuda_detail::hydro_kernel;
+using cuda_detail::kThreads;
+
+void check(cudaError_t e, const char* what) {
+    if (e != cudaSuccess) throw std::runtime_error(std::string(what) + ": " + cudaGetErrorString(e));
 }
 
 class CudaBackend final : public ComputeBackend {

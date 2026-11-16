@@ -162,6 +162,30 @@ static void test_tanker_mesh_and_determinism() {
         four->evaluate(std::span<const WaterPlane>(&planes[i], 1), std::span<HydroAccum>(&r4single[i], 1));
     CHECK(std::memcmp(r1.data(), r4.data(), r1.size() * sizeof(HydroAccum)) == 0);
     CHECK(std::memcmp(r1.data(), r4single.data(), r1.size() * sizeof(HydroAccum)) == 0);
+
+    // The CUDA backend (built with HULLCAD_ENABLE_CUDA and a GPU present) runs the same
+    // per-triangle kernel but sums in a different order: equal to rounding, not bit for bit.
+    // Tolerances are scaled by the size of each quantity (volume, area, length).
+    if (auto gpu = make_cuda_backend()) {
+        gpu->upload(fine);
+        std::vector<HydroAccum> rg(planes.size());
+        gpu->evaluate(planes, rg);
+        const double L = p.Lpp, eps = 1e-12;
+        for (size_t i = 0; i < planes.size(); ++i) {
+            const HydroAccum &c = r1[i], &g = rg[i];
+            CHECK_NEAR(g.V, c.V, eps * c.V);
+            CHECK_NEAR(g.Mx, c.Mx, eps * c.V * L);
+            CHECK_NEAR(g.My, c.My, eps * c.V * L);
+            CHECK_NEAR(g.Mz, c.Mz, eps * c.V * L);
+            CHECK_NEAR(g.A, c.A, eps * c.A);
+            CHECK_NEAR(g.Su, c.Su, eps * c.A * L);
+            CHECK_NEAR(g.St, c.St, eps * c.A * L);
+            CHECK_NEAR(g.Suu, c.Suu, eps * c.A * L * L);
+            CHECK_NEAR(g.Stt, c.Stt, eps * c.A * L * L);
+            CHECK_NEAR(g.Sut, c.Sut, eps * c.A * L * L);
+        }
+        std::printf("checked %s against the CPU backend\n", gpu->name().c_str());
+    }
 }
 
 static void test_frame_table() {

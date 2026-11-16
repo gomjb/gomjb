@@ -430,9 +430,9 @@ int main(int argc, char** argv) {
     auto serial = make_cpu_backend(1);
     serial->upload(mesh);
     double t1 = bench(*serial, grid, 3);
-    std::printf("%-28s %8.3f s  (%.0f planes/s)\n", serial->name().c_str(), t1, grid.size() / t1);
+    std::printf("%-34s %8.3f s  (%.0f planes/s)\n", serial->name().c_str(), t1, grid.size() / t1);
     double tn = bench(*cpu, grid, 3);
-    std::printf("%-28s %8.3f s  (%.0f planes/s, speed-up x%.2f)\n", cpu->name().c_str(), tn, grid.size() / tn,
+    std::printf("%-34s %8.3f s  (%.0f planes/s, speed-up x%.2f)\n", cpu->name().c_str(), tn, grid.size() / tn,
                 t1 / tn);
     if (auto gpu = make_cuda_backend()) {
         gpu->upload(mesh);
@@ -443,7 +443,7 @@ int main(int argc, char** argv) {
         double maxrel = 0;
         for (size_t i = 0; i < a.size(); ++i)
             if (a[i].V > 1.0) maxrel = std::max(maxrel, std::fabs(a[i].V - b[i].V) / a[i].V);
-        std::printf("%-28s %8.3f s  (%.0f planes/s, speed-up x%.2f, max rel. volume diff vs CPU %.1e)\n",
+        std::printf("%-34s %8.3f s  (%.0f planes/s, speed-up x%.2f, max rel. volume diff vs CPU %.1e)\n",
                     gpu->name().c_str(), tg, grid.size() / tg, t1 / tg, maxrel);
     } else {
         std::printf("cuda: not available (built without HULLCAD_ENABLE_CUDA or no GPU)\n");

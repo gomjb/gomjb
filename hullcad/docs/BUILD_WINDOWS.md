@@ -71,6 +71,7 @@ cmake --install build\windows-x64 --config Release     # dist\windows-x64 에 �
 | 프리셋 | 용도 | 필요한 환경 변수 |
 |---|---|---|
 | `windows-x64` | x64 | `QT_DIR_X64` |
+| `windows-x64-cuda` | x64 + CUDA 백엔드 (4장) | `QT_DIR_X64` |
 | `windows-arm64` | ARM64 PC에서 네이티브 빌드 | `QT_DIR_ARM64` |
 | `windows-arm64-cross` | x64 PC에서 ARM64 크로스 빌드 | `QT_DIR_ARM64`, `QT_DIR_X64` |
 
@@ -84,7 +85,34 @@ Visual Studio에서 `hullcad` 폴더를 **"폴더 열기"**로 열어도 됩니�
 C:\Qt\6.8.3\msvc2022_64\bin\windeployqt.exe --release --qtpaths C:\Qt\6.8.3\msvc2022_arm64\bin\qtpaths.bat dist\windows-arm64-cross\bin\hullcad.exe
 ```
 
-## 4. 실행 파일
+## 4. CUDA 백엔드 (선택, NVIDIA GPU)
+
+정수압 적분 배치를 GPU에서 실행하는 백엔드입니다. 지금은 테스트(CPU와 결과 비교)와 `hullcad_demo` 벤치마크에서만
+쓰입니다. 앱과 명령줄 도구의 실제 계산은 CPU 백엔드로 합니다. CPU 백엔드는 스레드 수와 관계없이 결과가 비트 단위로 같고,
+GeForce에서는 GPU가 32스레드 CPU보다 약 1.15배 빠른 정도이기 때문입니다.
+
+1. Visual Studio 2022를 먼저 설치한 뒤 CUDA Toolkit 12.8 이상을 설치합니다. 그래야 VS용 CUDA 빌드 파일도 함께
+   설치됩니다. (약 3 GB, 관리자 권한 확인 창이 뜹니다.)
+
+   ```powershell
+   winget install --id Nvidia.CUDA -e
+   ```
+
+2. **새 터미널**을 열고 빌드합니다. 설치 프로그램이 등록한 `CUDA_PATH_V13_5` 같은 환경 변수는 새 터미널부터
+   보입니다. 설치 전에 열어 둔 터미널에서는 구성 단계에서 `The CUDA Toolkit directory '' does not exist` 오류가 납니다.
+
+   ```powershell
+   cmake --preset windows-x64-cuda
+   cmake --build --preset windows-x64-cuda
+   ctest --preset windows-x64-cuda                        # GPU가 있으면 CPU와 GPU 결과 비교 검사 포함
+   build\windows-x64-cuda\Release\hullcad_demo.exe        # 벤치마크 마지막 줄에 cuda 행과 CPU 대비 오차
+   ```
+
+기본 GPU 세대는 sm_75·86·89·120(RTX 20·30·40·50 시리즈)입니다. 바꾸려면 `-DCMAKE_CUDA_ARCHITECTURES=native`
+(이 PC의 GPU만)처럼 지정합니다. CUDA 런타임은 정적으로 링크하므로, 실행 파일을 다른 PC에 가져가도
+CUDA Toolkit 없이 NVIDIA 드라이버만 있으면 됩니다. 드라이버가 없으면 CPU 백엔드로 계산합니다.
+
+## 5. 실행 파일
 
 | 파일 | 내용 |
 |---|---|
@@ -94,11 +122,12 @@ C:\Qt\6.8.3\msvc2022_64\bin\windeployqt.exe --release --qtpaths C:\Qt\6.8.3\msvc
 
 `hullcad.exe --yard yards\mid_yard.ini`처럼 시작할 때 야드 프로파일을 지정할 수 있습니다.
 
-## 5. 검증 범위
+## 6. 검증 범위
 
 | 항목 | 검증 방법 | 결과 |
 |---|---|---|
 | Windows x64 네이티브 빌드 | Windows 11 x64 PC, VS 2022 (MSVC 19.44), CMake 4.2, Qt 6.8.3, `cmake --preset windows-x64` | 오류·경고 0, 테스트 1881개 통과, 데모 실행 |
 | Qt 앱 (Windows x64) | 위 빌드의 `hullcad.exe` 실행, 모든 탭 화면 확인 | 확인 |
 | 배포본 (Windows x64) | `cmake --install`(windeployqt)로 만든 `dist\windows-x64`를 Qt가 PATH에 없는 상태에서 실행 | 확인 |
+| CUDA 백엔드 (Windows x64) | CUDA 13.5, GeForce RTX 5060 Ti(sm_120), `windows-x64-cuda` 프리셋. 테스트는 CUDA 폴더가 PATH에 없는 상태에서 실행 | 오류·경고 0, 테스트 2001개 통과(GPU 비교 120개 포함), CPU 대비 체적 상대오차 1.3e-15 |
 | 코어 라이브러리, 테스트, CLI (Windows ARM64) | Linux에서 clang(mingw)로 크로스 빌드 | 빌드만 확인 (ARM64는 실행하지 못함) |

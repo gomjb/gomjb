@@ -14,20 +14,26 @@ option(HULLCAD_BUILD_APP "Build the Qt 6 desktop application (needs Qt 6.5+ on C
 
 if(MSVC)
   # Sources are UTF-8 (Korean UI text); standard-conforming mode; correct __cplusplus for Qt.
+  # The CUDA host compile needs /utf-8 too: the CUDA headers are UTF-8 and MSVC would otherwise
+  # read them in the system code page (C4819 on Korean Windows).
   add_compile_options($<$<COMPILE_LANGUAGE:CXX>:/utf-8> $<$<COMPILE_LANGUAGE:CXX>:/permissive->
-                      $<$<COMPILE_LANGUAGE:CXX>:/Zc:__cplusplus> $<$<COMPILE_LANGUAGE:CXX>:/EHsc>)
+                      $<$<COMPILE_LANGUAGE:CXX>:/Zc:__cplusplus> $<$<COMPILE_LANGUAGE:CXX>:/EHsc>
+                      $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=/utf-8>)
   add_compile_definitions(_CRT_SECURE_NO_WARNINGS)
 endif()
 
 find_package(Threads REQUIRED)
 
 if(HULLCAD_ENABLE_CUDA)
+  # Must be set before enable_language(CUDA), which otherwise fills in the compiler's own
+  # default (sm_75 only for CUDA 13). Turing, Ampere, Ada and Blackwell (RTX 50) GPUs; 120 needs
+  # CUDA 12.8 or later. Each entry also embeds PTX, so newer GPUs still run via JIT.
+  if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
+    set(CMAKE_CUDA_ARCHITECTURES 75 86 89 120)
+  endif()
   enable_language(CUDA)
   set(CMAKE_CUDA_STANDARD 20)
   set(CMAKE_CUDA_STANDARD_REQUIRED ON)
-  if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
-    set(CMAKE_CUDA_ARCHITECTURES 75 86 89)
-  endif()
   find_package(CUDAToolkit REQUIRED)
 endif()
 

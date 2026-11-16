@@ -57,10 +57,13 @@ BMt 10.12 m  KMt 17.91 m  BMl 284.1 m
 GZ curve (fixed trim, KG 13.0 m assumed, GM 4.91 m): GZmax 1.97 m at 30.0 deg
 
 == Benchmark: 2250 waterplanes x 77602 triangles ==
-cpu(1 threads)                  3.014 s  (746 planes/s)
-cpu(32 threads)                 0.126 s  (17817 planes/s, speed-up x23.87)
+cpu(1 threads)                        3.092 s  (728 planes/s)
+cpu(32 threads)                       0.124 s  (18140 planes/s, speed-up x24.93)
+cuda(NVIDIA GeForce RTX 5060 Ti)      0.108 s  (20911 planes/s, speed-up x28.74, max rel. volume diff vs CPU 1.3e-15)
 ```
-기본 선형(곡률 연속 빌지), Windows x64 MSVC 빌드, 32스레드 PC에서 측정했습니다.
+기본 선형(곡률 연속 빌지), Windows x64 MSVC 빌드(`windows-x64-cuda` 프리셋, CUDA 13.5), Ryzen 9 7950X(16코어 32스레드)와
+GeForce RTX 5060 Ti에서 측정했습니다. GPU 결과는 CPU와 반올림 오차 수준(1.3e-15)으로 같습니다. 속도는 32스레드 CPU의
+약 1.15배에 그칩니다. 계산이 배정밀도(FP64)인데, GeForce의 FP64 성능은 FP32의 1/64이기 때문입니다.
 
 ## 단면 순정 (Fairing)
 
@@ -339,13 +342,18 @@ ctest --preset linux-release                          # 단위 테스트
 ./build/linux-release/hullcad_demo --out out          # 명령줄: 오프셋, 정수압표, GZ, 선도, 블록 분할 + 벤치마크
 ```
 
-CUDA 백엔드 (NVIDIA GPU와 CUDA Toolkit 12.x 필요):
+CUDA 백엔드 (NVIDIA GPU와 CUDA Toolkit 12.8 이상 필요. Windows는 `windows-x64-cuda` 프리셋):
 
 ```bash
-cmake -S . -B build-cuda -DHULLCAD_ENABLE_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=86
+cmake -S . -B build-cuda -DHULLCAD_ENABLE_CUDA=ON
 cmake --build build-cuda -j
+./build-cuda/hullcad_tests        # GPU가 있으면 CPU와 GPU 결과 비교 검사도 실행
 ./build-cuda/hullcad_demo         # 벤치마크에 cuda 행과 CPU 대비 오차가 함께 출력됨
 ```
+
+기본 GPU 세대는 sm_75·86·89·120(RTX 20·30·40·50 시리즈)입니다. A100·H100은 `-DCMAKE_CUDA_ARCHITECTURES="80;90"`처럼
+지정하고, 이 PC의 GPU만 빌드하려면 `native`를 씁니다. CUDA 런타임은 정적으로 링크하므로 실행 파일에는
+NVIDIA 드라이버만 있으면 됩니다. 드라이버나 GPU가 없으면 CPU 백엔드로 계산합니다.
 
 ## 설계 원칙
 
@@ -370,6 +378,7 @@ cmake --build build-cuda -j
 - B-spline: 보간점 통과, 원의 곡률 1/R, 도함수와 유한차분 비교
 - 탱커 메쉬가 닫혀 있고 방향이 일관됨, 메쉬 세분화 시 배수량 변화 < 0.1 %
 - 1스레드와 4스레드, 단일 계산과 배치 계산 결과의 비트 단위 일치
+- CUDA 빌드에서 GPU가 있으면: GPU와 CPU의 적분값 10개(체적, 체적 모멘트, 수선면적, 면적 1·2차 모멘트)가 12개 수선면에서 상대 1e-12 이내로 일치
 - 프레임 테이블 변환 왕복(x ↔ 프레임 번호)
 - 상자형 선체의 블록 중량 해석해, 존 분할에 빈틈이나 중복이 없음, 1스레드와 4스레드 중량 모델의 비트 단위 일치
 - 존이 반열린 구간이라 심과 부재가 겹쳐도 중복 계산이 없음, 추가 심을 넣어도 분할이 정확함
@@ -398,10 +407,9 @@ cmake --build build-cuda -j
   25점이면 약 1 cm). 평저선·평측선을 패치 경계로 두는 다중 패치와 페어링 단계에서 근본적으로 해결할 예정입니다.
 - GZ는 **고정 트림**으로 계산합니다(자유 트림은 다음 단계). KG 13.0 m는 가정값입니다.
 - 상부구조, 해치, 개구부 침수각은 반영하지 않았습니다. 갑판은 수밀로 가정합니다.
-- CUDA 백엔드는 nvcc 12.6(sm_86)에서 컴파일·링크까지 확인했습니다. **실제 GPU에서는 아직 실행해 보지
-  않았으므로**, GPU 장비에서 데모를 실행해 CPU 대비 오차가 출력되는지 꼭 확인하세요.
-- 소비자용 GeForce는 FP64(배정밀도) 성능이 FP32의 1/32~1/64 수준입니다. 대량 배치는 FP64 성능이 높은
-  카드(A100/H100, 일부 워크스테이션 카드)가 유리합니다.
+- CUDA 백엔드는 GeForce RTX 5060 Ti(sm_120, CUDA 13.5)에서만 실행해 확인했습니다. 다른 GPU 세대는 빌드만 합니다.
+- 소비자용 GeForce는 FP64(배정밀도) 성능이 FP32의 1/32~1/64 수준이라, 위 벤치마크에서 GPU는 32스레드 CPU와 비슷한
+  속도입니다. 대량 배치는 FP64 성능이 높은 카드(A100/H100, 일부 워크스테이션 카드)가 유리합니다.
 
 ## 다음 단계
 

@@ -18,6 +18,12 @@
       "cacheVariables": { "CMAKE_PREFIX_PATH": "$env{QT_DIR_X64}" }
     },
     {
+      "name": "windows-x64-cuda",
+      "displayName": "Windows x64 with the CUDA backend (Qt: QT_DIR_X64, CUDA Toolkit 12.8+)",
+      "inherits": "windows-x64",
+      "cacheVariables": { "HULLCAD_ENABLE_CUDA": "ON" }
+    },
+    {
       "name": "windows-arm64",
       "displayName": "Windows ARM64, native build on an ARM64 PC (Qt: QT_DIR_ARM64)",
       "inherits": "windows-base",
@@ -46,12 +52,14 @@
   ],
   "buildPresets": [
     { "name": "windows-x64", "configurePreset": "windows-x64", "configuration": "Release" },
+    { "name": "windows-x64-cuda", "configurePreset": "windows-x64-cuda", "configuration": "Release" },
     { "name": "windows-arm64", "configurePreset": "windows-arm64", "configuration": "Release" },
     { "name": "windows-arm64-cross", "configurePreset": "windows-arm64-cross", "configuration": "Release" },
     { "name": "linux-release", "configurePreset": "linux-release" }
   ],
   "testPresets": [
     { "name": "windows-x64", "configurePreset": "windows-x64", "configuration": "Release", "output": { "outputOnFailure": true } },
+    { "name": "windows-x64-cuda", "configurePreset": "windows-x64-cuda", "configuration": "Release", "output": { "outputOnFailure": true } },
     { "name": "windows-arm64", "configurePreset": "windows-arm64", "configuration": "Release", "output": { "outputOnFailure": true } },
     { "name": "linux-release", "configurePreset": "linux-release", "output": { "outputOnFailure": true } }
   ]

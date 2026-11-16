@@ -50,7 +50,9 @@ hullcad_module(naval
 if(HULLCAD_ENABLE_CUDA)
   target_sources(hullcad_naval PRIVATE naval/src/backend_cuda.cu)
   target_compile_definitions(hullcad_naval PUBLIC HULLCAD_HAVE_CUDA=1)
-  target_link_libraries(hullcad_naval PUBLIC CUDA::cudart)
+  # Static CUDA runtime: executables need only the NVIDIA driver, not the toolkit's
+  # cudart DLL; without a driver make_cuda_backend() returns nullptr and the CPU is used.
+  target_link_libraries(hullcad_naval PUBLIC CUDA::cudart_static)
 endif()
 
 # 구조 설계: frame table, reference-based structural members, hull sections
