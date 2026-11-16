@@ -17,11 +17,34 @@ double smoother(double a, double b, double xi) {
 
 }  // namespace
 
+namespace {
+// Share of a super-ellipse corner box (|y/ry|^n + |z/rz|^n = 1, quadrant) outside the curve.
+double removed_share(double n) { return 1.0 - std::pow(std::tgamma(1.0 + 1.0 / n), 2) / std::tgamma(1.0 + 2.0 / n); }
+
+// Half-section area below the waterline z = T: integral of y dz from the keel to T.
+double area_below(const SectionShape& s, double T) {
+    const int n = 600;
+    double area = 0, y0 = s.fb, z0 = s.zk;
+    for (int i = 1; i <= n; ++i) {
+        const double t = 0.5 * kPi * i / n;
+        double y1 = s.fb + s.ry * std::pow(std::sin(t), 2.0 / s.n);
+        double z1 = s.zk + s.rz - s.rz * std::pow(std::cos(t), 2.0 / s.n);
+        if (z1 >= T) {  // clip the last piece at the waterline
+            const double f = z1 > z0 ? (T - z0) / (z1 - z0) : 0.0;
+            if (T > z0) area += 0.5 * (y0 + y0 + f * (y1 - y0)) * (T - z0);
+            return area;
+        }
+        area += 0.5 * (y0 + y1) * (z1 - z0);
+        y0 = y1;
+        z0 = z1;
+    }
+    return area + s.b * std::max(0.0, T - z0);  // vertical side above the corner
+}
+}  // namespace
+
 double bilge_corner_size(const TankerParams& p) {
     if (std::fabs(p.n_mid - 2.0) < 1e-12) return p.bilge_radius;
-    // Area outside a super-ellipse quadrant of size R: R^2 (1 - G(1+1/n)^2 / G(1+2/n)).
-    auto removed = [](double n) { return 1.0 - std::pow(std::tgamma(1.0 + 1.0 / n), 2) / std::tgamma(1.0 + 2.0 / n); };
-    return p.bilge_radius * std::sqrt(removed(2.0) / removed(p.n_mid));
+    return p.bilge_radius * std::sqrt(removed_share(2.0) / removed_share(p.n_mid));
 }
 
 SectionShape section_at(const TankerParams& p, double x) {
@@ -43,18 +66,56 @@ SectionShape section_at(const TankerParams& p, double x) {
     s.zk = p.stern_cutup_height * (1.0 - smoother(0.0, p.xi_cutup_end, xi)) +
            p.forefoot_rise * smoother(0.965, 1.0, xi);
 
-    // Flat of bottom. A non-circular midship bilge (n_mid != 2) is scaled so that it removes the
-    // same section area as a circular bilge of radius bilge_radius.
-    const double R = bilge_corner_size(p);
-    double fob = smoother(p.xi_fob_aft, p.xi_pmb_aft, xi) * (1.0 - smoother(p.xi_bow_corner - 0.04, p.xi_fob_fwd, xi));
-    s.fb = std::max(0.0, std::min((hb - R) * fob, s.b - R));
-
-    // Bilge corner grows to span the whole section toward the ends.
+    // Reference section with a circular midship bilge (n = 2 in the parallel middle body).
+    const double R = p.bilge_radius;
+    const double fob = smoother(p.xi_fob_aft, p.xi_pmb_aft, xi) * (1.0 - smoother(p.xi_bow_corner - 0.04, p.xi_fob_fwd, xi));
     const double wfc = smoother(p.xi_bow_corner, 1.0, xi);
-    double w_end = std::max(std::pow(wa, 0.8), wfc);
-    s.rz = R + (p.D - s.zk - R) * w_end;
-    s.ry = s.b - s.fb;
+    const double w_end = std::max(std::pow(wa, 0.8), wfc);
+    const double fb_ref = std::max(0.0, std::min((hb - R) * fob, s.b - R));
+    const double rz_ref = R + (p.D - s.zk - R) * w_end;
+    const double ry_ref = s.b - fb_ref;
+    const double n_ref = 2.0 + (p.n_aft - 2.0) * wa + (p.n_fwd - 2.0) * wfc;
     s.n = p.n_mid + (p.n_aft - p.n_mid) * wa + (p.n_fwd - p.n_mid) * wfc;
+    s.fb = fb_ref;
+    s.ry = ry_ref;
+    s.rz = rz_ref;
+    if (std::fabs(s.n - n_ref) > 1e-12 && p.T > s.zk) {
+        // Another corner exponent: scale the corner so that the section keeps the reference area
+        // below the design waterline. Every section area under T is kept, hence the displacement
+        // and LCB at the design draft. A larger corner removes more area, so bisect on the scale.
+        SectionShape ref = s;
+        ref.n = n_ref;
+        const double target = area_below(ref, p.T);
+        auto shaped = [&](double k) {
+            SectionShape c = s;
+            c.ry = std::min(k * ry_ref, s.b);
+            c.rz = std::min(k * rz_ref, p.D - s.zk);
+            c.fb = s.b - c.ry;
+            return c;
+        };
+        double lo = 0.2, hi = 5.0;
+        SectionShape c;
+        if (area_below(shaped(hi), p.T) > target) {
+            // The corner already fills its box: move the exponent back towards the reference
+            // (a lower exponent removes more area) until the area matches.
+            c = shaped(hi);
+            double nlo = std::min(n_ref, s.n), nhi = std::max(n_ref, s.n);
+            for (int it = 0; it < 50; ++it) {
+                c.n = 0.5 * (nlo + nhi);
+                if ((area_below(c, p.T) > target) == (s.n > n_ref)) nhi = c.n; else nlo = c.n;
+            }
+        } else {
+            for (int it = 0; it < 50; ++it) {
+                const double k = 0.5 * (lo + hi);
+                if (area_below(shaped(k), p.T) > target) lo = k; else hi = k;
+            }
+            c = shaped(0.5 * (lo + hi));
+        }
+        s.ry = c.ry;
+        s.rz = c.rz;
+        s.fb = c.fb;
+        s.n = c.n;
+    }
     return s;
 }
 

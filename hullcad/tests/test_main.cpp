@@ -410,6 +410,18 @@ static void test_fairing() {
     const double r4 = ripple(tessellate_hull(build_hull_surface(p4), 240, 80), p4);
     CHECK(r2 > 3e-4);
     CHECK(r4 < 1e-4);
+    // ... while keeping the displacement and LCB at the design draft (underwater area matched
+    // station by station).
+    {
+        auto be = make_cpu_backend(4);
+        ShipRef ref{p.Lpp, p.B, p.Lpp / 2, 1.025};
+        be->upload(tessellate_hull(build_hull_surface(p), 240, 80));
+        HydroResult h2 = hydrostatic_table(*be, ref, {p.T})[0];
+        be->upload(tessellate_hull(build_hull_surface(p4), 240, 80));
+        HydroResult h4 = hydrostatic_table(*be, ref, {p.T})[0];
+        CHECK(std::fabs(h4.volume / h2.volume - 1.0) < 2e-4);
+        CHECK_NEAR(h4.B.x, h2.B.x, 0.05);
+    }
 
     // 8. All stations but the stem fair within tolerance; midship has no inflection.
     HullFairing hf = fair_hull_sections(p, exact);
