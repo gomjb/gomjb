@@ -7,6 +7,7 @@ qt_add_executable(hullcad_app WIN32 MACOSX_BUNDLE
   YardForm.cpp YardForm.h
   SvgView.cpp SvgView.h
   GzPlot.cpp GzPlot.h
+  DailyPlot.cpp DailyPlot.h
   pipeline.cpp pipeline.h
 )
 set_target_properties(hullcad_app PROPERTIES OUTPUT_NAME hullcad)

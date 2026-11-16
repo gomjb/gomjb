@@ -5,6 +5,7 @@
 
 #include "pipeline.h"
 
+class QComboBox;
 class QDoubleSpinBox;
 class QLabel;
 class QLineEdit;
@@ -13,6 +14,7 @@ class QPushButton;
 class QTabWidget;
 class QTableWidget;
 class QTextBrowser;
+class DailyPlot;
 class GzPlot;
 class SvgView;
 class YardForm;
@@ -47,6 +49,8 @@ private:
     QWidget* buildDivisionTab();
     QWidget* buildUtilityTab();
     void showUtilities(const hullcad::app::DivisionRun& d);
+    void showSchedule(const hullcad::app::DivisionRun& d);
+    void showDailyPlot();
     void buildMenus();
     hullcad::TankerParams hullParams() const;
     void showHull(const hullcad::app::HullRun& h);
@@ -77,6 +81,11 @@ private:
     QLabel* utilSummary_ = nullptr;
     QTableWidget* utilStageTable_ = nullptr;
     QTableWidget* utilBlockTable_ = nullptr;
+    QComboBox* dailyItem_ = nullptr;
+    DailyPlot* dailyPlot_ = nullptr;
+    QLabel* scheduleSummary_ = nullptr;
+    QTableWidget* peaksTable_ = nullptr;
+    QTableWidget* scheduleTable_ = nullptr;
 
     std::shared_ptr<const hullcad::app::HullRun> hull_;
     hullcad::app::DivisionRun division_;

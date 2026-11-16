@@ -9,6 +9,7 @@
 #include "hullcad/hull_param.hpp"
 #include "hullcad/hydrostatics.hpp"
 #include "hullcad/mesh.hpp"
+#include "hullcad/schedule.hpp"
 #include "hullcad/structure.hpp"
 #include "hullcad/utilities.hpp"
 #include "hullcad/yard.hpp"
@@ -34,6 +35,9 @@ struct DivisionRun {
     std::string svg;
     Mass steel_total;
     UtilityReport utilities;          // work-driven utility estimate of the blocks
+    ScheduleResult schedule;          // production schedule and daily utility profile
+    std::string schedule_error;       // e.g. malformed schedule options
+    YardProfile yard;                 // profile the run used
     bool manual = false;
     double seconds = 0;
     std::string error;

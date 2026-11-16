@@ -33,6 +33,7 @@ add_library(hullcad_core
   src/blocks.cpp
   src/yard.cpp
   src/utilities.cpp
+  src/schedule.cpp
 )
 target_include_directories(hullcad_core PUBLIC include)
 target_link_libraries(hullcad_core PUBLIC Threads::Threads)

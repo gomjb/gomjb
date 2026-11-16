@@ -82,7 +82,15 @@ DivisionRun run_division(const HullRun& hull, const YardProfile& yard, const std
             r.division = auto_divide(wm, p, st, yard);
         }
         r.summary = summarize_checks(r.division);
-        if (!r.division.blocks.empty()) r.utilities = estimate_utilities(r.division, hull.tanks, yard);
+        r.yard = yard;
+        if (!r.division.blocks.empty()) {
+            r.utilities = estimate_utilities(r.division, hull.tanks, yard);
+            try {
+                r.schedule = schedule_utilities(r.division, r.utilities, yard);
+            } catch (const std::exception& e) {
+                r.schedule_error = e.what();
+            }
+        }
         if (!r.division.butts.empty()) r.svg = division_svg(r.division, hull.mesh, p, st, wm, yard);
     } catch (const std::exception& e) {
         r.error = e.what();

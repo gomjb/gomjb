@@ -12,6 +12,7 @@
 #include "hullcad/hull_param.hpp"
 #include "hullcad/hydrostatics.hpp"
 #include "hullcad/mesh.hpp"
+#include "hullcad/schedule.hpp"
 #include "hullcad/utilities.hpp"
 
 using namespace hullcad;
@@ -294,6 +295,37 @@ static void test_box_takeoff_and_utilities() {
     CHECK_NEAR(v.ballast_m3, (p.B * p.D - (p.B - 4) * (p.D - 2)) * 40, 1e-6);
 }
 
+static void test_calendar() {
+    CHECK(days_from_date("1970-01-01") == 0);
+    CHECK(days_from_date("2027-03-02") == 20879);
+    CHECK(date_from_days(20879) == "2027-03-02");
+    CHECK(date_from_days(days_from_date("2028-02-29")) == "2028-02-29");
+    for (long d = -800; d < 80000; d += 997) CHECK(days_from_date(date_from_days(d)) == d);
+    CHECK(weekday_mon0(days_from_date("2026-11-16")) == 0);  // Monday
+    CHECK(weekday_mon0(days_from_date("2027-03-02")) == 1);  // Tuesday
+    auto bad = [](const char* s) {
+        try { days_from_date(s); } catch (const std::invalid_argument&) { return true; }
+        return false;
+    };
+    CHECK(bad("2027-02-29") && bad("2027-13-01") && bad("2027-3-2x") && bad("tomorrow"));
+    YardProfile y;
+    bool rejected = false;
+    try { set_yard_option(y, "schedule.erection_start", "2027-02-30"); } catch (const std::invalid_argument&) { rejected = true; }
+    CHECK(rejected);
+
+    // Six-day weeks starting on Tuesday 2027-03-02: Sunday is skipped both ways.
+    WorkCalendar c(days_from_date("2027-03-02"), 6);
+    CHECK(c.date(0) == "2027-03-02");
+    CHECK(c.date(4) == "2027-03-06");   // Saturday
+    CHECK(c.date(5) == "2027-03-08");   // Monday
+    CHECK(c.date(-1) == "2027-03-01");
+    CHECK(c.date(-2) == "2027-02-27");  // Saturday before
+    CHECK(c.date(11) == "2027-03-15");
+    WorkCalendar sun(days_from_date("2027-03-07"), 5);  // starts on a Sunday -> Monday
+    CHECK(sun.date(0) == "2027-03-08");
+    CHECK(sun.date(5) == "2027-03-15");
+}
+
 static void test_yard_profile() {
     YardProfile y;
     set_yard_option(y, "transporter.units", "3");
@@ -405,12 +437,52 @@ static void test_tanker_division() {
     CHECK_NEAR(ur.quantities.plate_area, plate, 1e-6);
     CHECK(ur.tanks.cargo_m3 > 120000 && ur.tanks.cargo_m3 < 145000);  // 120k DWT tanker cargo capacity
     CHECK(ur.total.electricity_kwh > 0 && ur.total.air_nm3 > 0 && ur.total.water_m3 > 0);
+
+    // Schedule: every unit of every utility lands on exactly one day (conservation).
+    ScheduleResult sr = schedule_utilities(d, ur, y);
+    for (auto& it : utility_items()) {
+        double sum = 0;
+        for (auto& day : sr.daily_total) sum += day.*(it.member);
+        CHECK_NEAR(sum, ur.total.*(it.member), 1e-9 * std::max(1.0, ur.total.*(it.member)));
+    }
+    // Erection starts in the key ring with a bottom block; stages follow each other before erection.
+    const BlockSchedule* first = nullptr;
+    for (auto& b : sr.blocks) if (b.erection_order == 1) first = &b;
+    CHECK(first && first->erection_wd == 0);
+    CHECK(first && d.butts[first->ring - 1] <= 0.35 * p.Lpp && 0.35 * p.Lpp < d.butts[first->ring]);
+    CHECK(first && (first->zone.rfind("DB", 0) == 0 || first->zone.rfind("LOW", 0) == 0));
+    for (size_t i = 0; i < sr.blocks.size(); ++i) {
+        const auto& b = sr.blocks[i];
+        auto sp = [&](Stage s) { return b.span[static_cast<int>(s)]; };
+        CHECK(sp(Stage::Cutting).end == sp(Stage::Heating).start);
+        CHECK(sp(Stage::Heating).end == sp(Stage::Welding).start);
+        CHECK(sp(Stage::Welding).end == sp(Stage::Painting).start);
+        CHECK(sp(Stage::Painting).end + y.schedule.paint_to_erection_days == b.erection_wd);
+        CHECK((sp(Stage::Heating).days() > 0) == !d.blocks[i].flat);
+        CHECK(b.erection_wd == static_cast<int>(std::floor((b.erection_order - 1) / y.schedule.erection_blocks_per_day)));
+    }
+    // Peaks: the daily maximum, converted to an hourly rate; capacity utilisation and overrun days.
+    const PeakInfo& e = sr.peaks[0];
+    double mx = 0;
+    for (auto& day : sr.daily_total) mx = std::max(mx, day.electricity_kwh);
+    CHECK_NEAR(e.daily_peak, mx, 1e-9);
+    CHECK_NEAR(e.peak_rate, mx / y.capacity.hours_per_day * y.capacity.peak_factor, 1e-9);
+    YardProfile yc = y;
+    yc.capacity.electricity_kw = e.peak_rate / 2;
+    yc.capacity.base_electricity_kw = 100;
+    ScheduleResult sc = schedule_utilities(d, ur, yc);
+    CHECK(sc.peaks[0].days_over > 0);
+    CHECK_NEAR(sc.peaks[0].daily_peak, mx + 100 * y.capacity.hours_per_day, 1e-6);  // base load on every day
+    double shares = 0;
+    for (double v : sc.peaks[0].stage_share) shares += v;
+    CHECK_NEAR(shares, 1.0, 1e-9);
 }
 
 int main() {
     test_frame_table();
     test_box_block_weights();
     test_yard_profile();
+    test_calendar();
     test_box_takeoff_and_utilities();
     test_tanker_division();
     test_bspline();

@@ -173,12 +173,43 @@ struct YardProfile {
         double air_test_pressure_bar = 0.2;
         double air_leak_factor = 2.0;      // compressed air used per theoretical fill (leaks, repeats)
     } util_testing;
+
+    // ---- Production schedule (working days) used to spread utilities over the calendar.
+    struct Schedule {
+        std::string erection_start = "2027-03-02";  // first block erected (keel laying), YYYY-MM-DD
+        int work_days_per_week = 6;                  // Mon..Sat
+        double erection_blocks_per_day = 1.5;
+        double erection_key_x = 0.35;   // erection starts at the ring containing this x / Lpp
+        int cutting_days = 4;
+        int heating_days = 5;           // curved blocks only
+        double assembly_days = 8.0;
+        double assembly_days_per_100t = 4.0;
+        int painting_days = 6;
+        int paint_to_erection_days = 5; // storage / pre-erection buffer
+        int erection_weld_days = 6;
+        int test_after_last_erection_days = 20;
+        int test_days = 30;
+    } schedule;
+
+    // ---- Utility supply capacity allocated to this ship (0 = not checked) and base load.
+    struct Capacity {
+        double hours_per_day = 16.0;     // working hours over which a day's consumption is drawn
+        double peak_factor = 1.3;        // simultaneity: peak hourly demand / average hourly demand
+        double electricity_kw = 0;
+        double oxygen_nm3_h = 0;
+        double fuel_gas_nm3_h = 0;
+        double co2_nm3_h = 0;
+        double air_nm3_min = 0;
+        double water_m3_h = 0;
+        double base_electricity_kw = 0;  // time-driven base load (lighting, HVAC) during working hours
+        double base_air_nm3_min = 0;     // compressor idling / network leakage
+    } capacity;
 };
 
 // One INI key bound to a profile field, with its unit and help text (used for parsing, `--set`
 // overrides, and writing an annotated template).
 struct YardOption {
-    enum class Type { Bool, Number, Integer, Text, List, NumberList };
+    enum class Type { Bool, Number, Integer, Text, List, NumberList, Date };
     std::string key;  // "section.name"
     Type type;
     void* ptr;
@@ -194,6 +225,11 @@ void set_yard_option(YardProfile& y, const std::string& key, const std::string& 
 std::string get_yard_option(YardProfile& y, const std::string& key);
 
 // Loads an INI file on top of `base` (unspecified keys keep their base values).
+// Calendar helpers: days since 1970-01-01 <-> "YYYY-MM-DD" (proleptic Gregorian).
+long days_from_date(const std::string& ymd);  // throws std::invalid_argument on malformed dates
+std::string date_from_days(long days);
+int weekday_mon0(long days);                  // Monday = 0 ... Sunday = 6
+
 YardProfile load_yard_profile(const std::string& path, YardProfile base = {});
 void write_yard_profile(YardProfile y, const std::string& path);  // annotated, all keys
 

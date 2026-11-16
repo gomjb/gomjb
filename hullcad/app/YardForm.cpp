@@ -64,10 +64,12 @@ YardForm::YardForm(QWidget* parent) : QWidget(parent) {
                     break;
                 }
                 case YardOption::Type::Text:
+                case YardOption::Type::Date:
                 case YardOption::Type::List:
                 case YardOption::Type::NumberList: {
                     auto* e = new QLineEdit(box);
-                    if (o.type != YardOption::Type::Text) e->setPlaceholderText(tr("쉼표로 구분"));
+                    if (o.type == YardOption::Type::Date) e->setPlaceholderText(QStringLiteral("YYYY-MM-DD"));
+                    else if (o.type != YardOption::Type::Text) e->setPlaceholderText(tr("쉼표로 구분"));
                     connect(e, &QLineEdit::textEdited, this, &YardForm::changed);
                     w = e;
                     break;

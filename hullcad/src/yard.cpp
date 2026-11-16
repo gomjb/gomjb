@@ -1,6 +1,7 @@
 #include "hullcad/yard.hpp"
 
 #include <cerrno>
+#include <cstdio>
 #include <cstdlib>
 #include <fstream>
 #include <sstream>
@@ -47,6 +48,8 @@ std::vector<std::pair<std::string, std::string>> yard_sections() {
         {"util_painting", "유틸리티 원단위 - 블라스팅·도장: 압축공기, 도료, 환기 전력, 건조 연료 (참고값)"},
         {"util_handling", "유틸리티 원단위 - 크레인 전력, 트랜스포터 경유 (참고값)"},
         {"util_testing", "유틸리티 원단위 - 탱크 수압·공기 시험 (참고값)"},
+        {"schedule", "생산 일정: 탑재 시작일·속도·순서, 공정별 기간(작업일) (예시값)"},
+        {"capacity", "유틸리티 공급 능력(이 호선 할당분, 0 = 검사 안 함), 시간당 환산, 기본 부하"},
     };
 }
 
@@ -166,6 +169,31 @@ std::vector<YardOption> yard_options(YardProfile& y) {
         {"util_testing.air_test_fraction", T::Number, &y.util_testing.air_test_fraction, "-", "공기 시험하는 탱크 용적 비율"},
         {"util_testing.air_test_pressure_bar", T::Number, &y.util_testing.air_test_pressure_bar, "bar", "공기 시험 압력 (게이지)"},
         {"util_testing.air_leak_factor", T::Number, &y.util_testing.air_leak_factor, "-", "공기 시험 손실·재시험 계수"},
+
+        {"schedule.erection_start", T::Date, &y.schedule.erection_start, "", "첫 블록 탑재일 (YYYY-MM-DD)"},
+        {"schedule.work_days_per_week", T::Integer, &y.schedule.work_days_per_week, "일", "주당 작업일 (월요일부터)"},
+        {"schedule.erection_blocks_per_day", T::Number, &y.schedule.erection_blocks_per_day, "블록/일", "탑재 속도"},
+        {"schedule.erection_key_x", T::Number, &y.schedule.erection_key_x, "x/Lpp", "탑재 시작 위치 (키 블록 링)"},
+        {"schedule.cutting_days", T::Integer, &y.schedule.cutting_days, "일", "절단 기간"},
+        {"schedule.heating_days", T::Integer, &y.schedule.heating_days, "일", "곡가공 기간 (곡블록만)"},
+        {"schedule.assembly_days", T::Number, &y.schedule.assembly_days, "일", "조립 기본 기간"},
+        {"schedule.assembly_days_per_100t", T::Number, &y.schedule.assembly_days_per_100t, "일", "강재 100 t당 추가 조립 기간"},
+        {"schedule.painting_days", T::Integer, &y.schedule.painting_days, "일", "블라스팅·도장 기간"},
+        {"schedule.paint_to_erection_days", T::Integer, &y.schedule.paint_to_erection_days, "일", "도장 완료 후 탑재까지 (적치·선행탑재)"},
+        {"schedule.erection_weld_days", T::Integer, &y.schedule.erection_weld_days, "일", "탑재 후 용접 기간"},
+        {"schedule.test_after_last_erection_days", T::Integer, &y.schedule.test_after_last_erection_days, "일", "마지막 탑재 후 탱크 시험 시작까지"},
+        {"schedule.test_days", T::Integer, &y.schedule.test_days, "일", "탱크 시험 기간"},
+
+        {"capacity.hours_per_day", T::Number, &y.capacity.hours_per_day, "h", "하루 작업 시간 (일 사용량을 시간당으로 환산)"},
+        {"capacity.peak_factor", T::Number, &y.capacity.peak_factor, "-", "동시 사용 계수 (피크 / 평균 시간당 수요)"},
+        {"capacity.electricity_kw", T::Number, &y.capacity.electricity_kw, "kW", "전력 공급 능력"},
+        {"capacity.oxygen_nm3_h", T::Number, &y.capacity.oxygen_nm3_h, "Nm3/h", "산소 공급 능력"},
+        {"capacity.fuel_gas_nm3_h", T::Number, &y.capacity.fuel_gas_nm3_h, "Nm3/h", "연료가스 공급 능력"},
+        {"capacity.co2_nm3_h", T::Number, &y.capacity.co2_nm3_h, "Nm3/h", "CO2 공급 능력"},
+        {"capacity.air_nm3_min", T::Number, &y.capacity.air_nm3_min, "Nm3/min", "압축공기 공급 능력 (컴프레서)"},
+        {"capacity.water_m3_h", T::Number, &y.capacity.water_m3_h, "m3/h", "용수 공급 능력"},
+        {"capacity.base_electricity_kw", T::Number, &y.capacity.base_electricity_kw, "kW", "기본 전력 부하 (조명·공조, 작업 시간 중)"},
+        {"capacity.base_air_nm3_min", T::Number, &y.capacity.base_air_nm3_min, "Nm3/min", "기본 공기 부하 (공회전·누설)"},
     };
 }
 
@@ -189,6 +217,10 @@ void set_yard_option(YardProfile& y, const std::string& key, const std::string& 
                 return;
             }
             case YardOption::Type::Text:
+                *static_cast<std::string*>(o.ptr) = v;
+                return;
+            case YardOption::Type::Date:
+                days_from_date(v);  // validates
                 *static_cast<std::string*>(o.ptr) = v;
                 return;
             case YardOption::Type::List: {
@@ -220,7 +252,8 @@ std::string get_yard_option(YardProfile& y, const std::string& key) {
             case YardOption::Type::Bool: s << (*static_cast<bool*>(o.ptr) ? "true" : "false"); break;
             case YardOption::Type::Number: s << *static_cast<double*>(o.ptr); break;
             case YardOption::Type::Integer: s << *static_cast<int*>(o.ptr); break;
-            case YardOption::Type::Text: s << *static_cast<std::string*>(o.ptr); break;
+            case YardOption::Type::Text:
+            case YardOption::Type::Date: s << *static_cast<std::string*>(o.ptr); break;
             case YardOption::Type::List: {
                 auto& l = *static_cast<std::vector<std::string>*>(o.ptr);
                 for (size_t i = 0; i < l.size(); ++i) s << (i ? "," : "") << l[i];
@@ -236,6 +269,44 @@ std::string get_yard_option(YardProfile& y, const std::string& key) {
     }
     throw std::invalid_argument("unknown yard option: " + key);
 }
+
+// Howard Hinnant's days_from_civil / civil_from_days.
+long days_from_date(const std::string& ymd) {
+    int y = 0, m = 0, d = 0;
+    char c1 = 0, c2 = 0;
+    std::istringstream in(trim(ymd));
+    in >> y >> c1 >> m >> c2 >> d;
+    std::string rest;
+    if (!in || c1 != '-' || c2 != '-' || (in >> rest) || m < 1 || m > 12 || d < 1)
+        throw std::invalid_argument("'" + ymd + "' is not a date (YYYY-MM-DD)");
+    static const int mdays[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+    const bool leap = (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
+    if (d > mdays[m - 1] + (m == 2 && leap ? 1 : 0)) throw std::invalid_argument("'" + ymd + "' is not a valid day");
+    y -= m <= 2;
+    const long era = (y >= 0 ? y : y - 399) / 400;
+    const unsigned yoe = static_cast<unsigned>(y - era * 400);
+    const unsigned doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+    const unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    return era * 146097 + static_cast<long>(doe) - 719468;
+}
+
+std::string date_from_days(long z) {
+    z += 719468;
+    const long era = (z >= 0 ? z : z - 146096) / 146097;
+    const unsigned doe = static_cast<unsigned>(z - era * 146097);
+    const unsigned yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    long y = static_cast<long>(yoe) + era * 400;
+    const unsigned doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    const unsigned mp = (5 * doy + 2) / 153;
+    const unsigned d = doy - (153 * mp + 2) / 5 + 1;
+    const unsigned m = mp < 10 ? mp + 3 : mp - 9;
+    y += m <= 2;
+    char buf[48];
+    std::snprintf(buf, sizeof buf, "%04ld-%02u-%02u", y, m, d);
+    return buf;
+}
+
+int weekday_mon0(long days) { return static_cast<int>(((days % 7) + 7 + 3) % 7); }  // 1970-01-01 was a Thursday
 
 YardProfile load_yard_profile(const std::string& path, YardProfile base) {
     std::ifstream f(path);

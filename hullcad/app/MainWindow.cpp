@@ -1,6 +1,7 @@
 #include "MainWindow.h"
 
 #include <QApplication>
+#include <QComboBox>
 #include <QDir>
 #include <QDoubleSpinBox>
 #include <QFile>
@@ -28,6 +29,7 @@
 #include <QtConcurrent/QtConcurrentRun>
 #include <stdexcept>
 
+#include "DailyPlot.h"
 #include "GzPlot.h"
 #include "SvgView.h"
 #include "YardForm.h"
@@ -255,7 +257,7 @@ QWidget* MainWindow::buildUtilityTab() {
     auto* v = new QVBoxLayout(w);
     auto* note = new QLabel(tr("유틸리티 사용량 = 블록별 작업 물량 × 원단위.  원단위는 <b>참고값</b>입니다. "
                                "'블록 분할' 탭의 야드 프로파일에서 [takeoff], [util_*] 항목을 야드 실측값으로 바꾸세요. "
-                               "시간에 비례하는 기본 부하(조명, 공조, 압축기 공회전)는 일정 정보가 필요해 포함하지 않았습니다."));
+                               "시간에 비례하는 기본 부하(조명, 공조, 압축기 공회전)는 [capacity]의 base_* 항목으로 일별 부하에만 더해집니다."));
     note->setWordWrap(true);
     v->addWidget(note);
     utilSummary_ = new QLabel;
@@ -264,6 +266,9 @@ QWidget* MainWindow::buildUtilityTab() {
     v->addWidget(utilSummary_);
     QStringList cols;
     for (auto& it : utility_items()) cols << QStringLiteral("%1 (%2)").arg(QString::fromUtf8(it.label), QString::fromUtf8(it.unit));
+    auto* inner = new QTabWidget;
+    inner->setObjectName(QStringLiteral("innerTabs"));
+    v->addWidget(inner, 1);
     auto* split = new QSplitter(Qt::Vertical);
     utilStageTable_ = new QTableWidget;
     setupTable(utilStageTable_, QStringList{tr("공정")} + cols);
@@ -275,8 +280,131 @@ QWidget* MainWindow::buildUtilityTab() {
     utilBlockTable_->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
     split->addWidget(utilBlockTable_);
     split->setSizes({330, 520});
-    v->addWidget(split, 1);
+    inner->addTab(split, tr("합계 (공정별 · 블록별)"));
+
+    // Daily load: stacked chart per utility, peak / capacity table.
+    auto* daily = new QWidget;
+    auto* dv = new QVBoxLayout(daily);
+    scheduleSummary_ = new QLabel;
+    scheduleSummary_->setWordWrap(true);
+    dv->addWidget(scheduleSummary_);
+    auto* pickRow = new QHBoxLayout;
+    pickRow->addWidget(new QLabel(tr("유틸리티:")));
+    dailyItem_ = new QComboBox;
+    for (auto& it : utility_items()) dailyItem_->addItem(QString::fromUtf8(it.label));
+    connect(dailyItem_, &QComboBox::currentIndexChanged, this, &MainWindow::showDailyPlot);
+    pickRow->addWidget(dailyItem_);
+    pickRow->addWidget(new QLabel(tr("공급 능력·기본 부하·일정은 '블록 분할' 탭의 [capacity], [schedule] 항목에서 입력합니다.")));
+    pickRow->addStretch(1);
+    dv->addLayout(pickRow);
+    auto* dsplit = new QSplitter(Qt::Vertical);
+    dailyPlot_ = new DailyPlot;
+    dsplit->addWidget(dailyPlot_);
+    peaksTable_ = new QTableWidget;
+    setupTable(peaksTable_, {tr("유틸리티"), tr("피크일 사용량"), tr("피크일"), tr("일평균"), tr("피크 시간당"),
+                             tr("공급 능력"), tr("이용률 %"), tr("초과 일수"), tr("피크일 주요 공정"), tr("피크일 최대 항목")});
+    dsplit->addWidget(peaksTable_);
+    dsplit->setSizes({480, 300});
+    dv->addWidget(dsplit, 1);
+    inner->addTab(daily, tr("일별 부하 · 피크"));
+
+    scheduleTable_ = new QTableWidget;
+    setupTable(scheduleTable_, {tr("순서"), tr("블록"), tr("탑재일"), tr("절단"), tr("곡가공"), tr("조립"), tr("도장"),
+                                tr("탑재 용접")});
+    scheduleTable_->setSortingEnabled(true);
+    inner->addTab(scheduleTable_, tr("블록 일정"));
     return w;
+}
+
+void MainWindow::showSchedule(const DivisionRun& d) {
+    const ScheduleResult& s = d.schedule;
+    peaksTable_->setRowCount(0);
+    scheduleTable_->setSortingEnabled(false);
+    scheduleTable_->setRowCount(0);
+    if (!d.schedule_error.empty()) {
+        scheduleSummary_->setText(tr("<span style='color:#b00020'>일정 오류: %1</span>").arg(QString::fromUtf8(d.schedule_error.c_str())));
+        dailyPlot_->clear();
+        return;
+    }
+    if (s.blocks.empty()) {
+        scheduleSummary_->setText(tr("블록 분할 결과가 없어 일정을 만들지 않았습니다."));
+        dailyPlot_->clear();
+        return;
+    }
+    int last_erection = 0;
+    for (auto& b : s.blocks) last_erection = std::max(last_erection, b.erection_wd);
+    int over = 0;
+    for (auto& pk : s.peaks) over += pk.capacity > 0 && pk.days_over > 0;
+    scheduleSummary_->setText(
+        tr("첫 절단 %1 · 탑재 %2 ~ %3 (블록 %4개, 하루 %5개) · 탱크 시험 %6 ~ %7 · 작업일 %8일 · 시간당 환산: %9시간/일 × 동시계수 %10%11")
+            .arg(QString::fromStdString(s.calendar.date(s.first_wd)), QString::fromStdString(s.calendar.date(0)),
+                 QString::fromStdString(s.calendar.date(last_erection)))
+            .arg(s.blocks.size()).arg(d.yard.schedule.erection_blocks_per_day)
+            .arg(QString::fromStdString(s.calendar.date(s.testing.start)), QString::fromStdString(s.calendar.date(s.testing.end - 1)))
+            .arg(s.days()).arg(d.yard.capacity.hours_per_day).arg(d.yard.capacity.peak_factor)
+            .arg(over ? tr(" — <span style='color:#b00020'><b>공급 능력 초과 %1건</b></span>").arg(over) : QString()));
+
+    peaksTable_->setRowCount(static_cast<int>(s.peaks.size()));
+    for (int i = 0; i < static_cast<int>(s.peaks.size()); ++i) {
+        const PeakInfo& pk = s.peaks[i];
+        const QString unit = QString::fromUtf8(utility_items()[i].unit);
+        const QString ru = QString::fromStdString(pk.rate_unit);
+        peaksTable_->setItem(i, 0, text(QStringLiteral("%1 (%2)").arg(QString::fromUtf8(pk.label.c_str()), unit)));
+        peaksTable_->setItem(i, 1, num(pk.daily_peak, 0));
+        peaksTable_->setItem(i, 2, text(pk.daily_peak > 0 ? QString::fromStdString(s.calendar.date(pk.peak_wd)) : QString()));
+        peaksTable_->setItem(i, 3, num(pk.daily_mean, 0));
+        peaksTable_->setItem(i, 4, text(QStringLiteral("%1 %2").arg(QLocale(QLocale::English).toString(pk.peak_rate, 'f', 1), ru)));
+        peaksTable_->setItem(i, 5, text(pk.capacity > 0 ? QStringLiteral("%1 %2").arg(QLocale(QLocale::English).toString(pk.capacity, 'f', 1), ru) : tr("-")));
+        peaksTable_->setItem(i, 6, pk.capacity > 0 ? num(100 * pk.utilization, 0) : text(tr("-")));
+        peaksTable_->setItem(i, 7, pk.capacity > 0 ? num(pk.days_over, 0) : text(tr("-")));
+        QString dom;
+        if (pk.dominant_stage >= 0)
+            dom = QStringLiteral("%1 %2%")
+                      .arg(pk.dominant_stage < kStageCount ? QString::fromUtf8(stage_label(static_cast<Stage>(pk.dominant_stage))) : tr("기본 부하"))
+                      .arg(std::lround(100 * pk.stage_share[pk.dominant_stage]));
+        peaksTable_->setItem(i, 8, text(dom));
+        peaksTable_->setItem(i, 9, text(pk.contributors.empty() ? QString() : QString::fromUtf8(pk.contributors.front().first.c_str())));
+        if (pk.capacity > 0 && pk.days_over > 0)
+            for (int c = 0; c < peaksTable_->columnCount(); ++c) peaksTable_->item(i, c)->setForeground(QColor(0xb0, 0x00, 0x20));
+    }
+
+    auto span = [&](const StageSpan& sp) {
+        if (sp.days() <= 0) return QString();
+        return QStringLiteral("%1 ~ %2").arg(QString::fromStdString(s.calendar.date(sp.start)).mid(5),
+                                              QString::fromStdString(s.calendar.date(sp.end - 1)).mid(5));
+    };
+    scheduleTable_->setRowCount(static_cast<int>(s.blocks.size()));
+    for (int i = 0; i < static_cast<int>(s.blocks.size()); ++i) {
+        const BlockSchedule& b = s.blocks[i];
+        auto st = [&](Stage x) { return b.span[static_cast<int>(x)]; };
+        scheduleTable_->setItem(i, 0, num(b.erection_order, 0));
+        scheduleTable_->setItem(i, 1, text(QString::fromStdString(b.block)));
+        scheduleTable_->setItem(i, 2, text(QString::fromStdString(s.calendar.date(b.erection_wd))));
+        scheduleTable_->setItem(i, 3, text(span(st(Stage::Cutting))));
+        scheduleTable_->setItem(i, 4, text(span(st(Stage::Heating))));
+        scheduleTable_->setItem(i, 5, text(span(st(Stage::Welding))));
+        scheduleTable_->setItem(i, 6, text(span(st(Stage::Painting))));
+        scheduleTable_->setItem(i, 7, text(span(st(Stage::Erection))));
+    }
+    scheduleTable_->setSortingEnabled(true);
+    scheduleTable_->sortItems(0);
+    showDailyPlot();
+}
+
+void MainWindow::showDailyPlot() {
+    const ScheduleResult& s = division_.schedule;
+    const int item = dailyItem_->currentIndex();
+    if (s.blocks.empty() || item < 0 || item >= static_cast<int>(s.peaks.size())) {
+        dailyPlot_->clear();
+        return;
+    }
+    const PeakInfo& pk = s.peaks[item];
+    // Capacity is an hourly rate; the chart is per day: rate x hours / simultaneity factor.
+    const auto& cap = division_.yard.capacity;
+    double per_day = 0;
+    if (pk.capacity > 0)
+        per_day = pk.capacity * (pk.key == "air_nm3" ? 60.0 : 1.0) * cap.hours_per_day / std::max(cap.peak_factor, 1e-9);
+    dailyPlot_->setData(s, item, per_day, QString::fromUtf8(utility_items()[item].unit));
 }
 
 void MainWindow::showUtilities(const DivisionRun& d) {
@@ -334,6 +462,18 @@ void MainWindow::buildMenus() {
     file->addAction(tr("야드 프로파일 저장…"), QKeySequence::Save, this, &MainWindow::saveYard);
     file->addSeparator();
     file->addAction(tr("블록 목록 CSV 내보내기…"), this, &MainWindow::exportBlocksCsv);
+    file->addAction(tr("일별 유틸리티·블록 일정 CSV 내보내기…"), this, [this] {
+        if (division_.schedule.blocks.empty()) return;
+        const QString dir = QFileDialog::getExistingDirectory(this, tr("저장할 폴더"));
+        if (dir.isEmpty()) return;
+        try {
+            write_daily_utilities_csv(division_.schedule, QDir::toNativeSeparators(QDir(dir).filePath(QStringLiteral("daily_utilities.csv"))).toStdString());
+            write_block_schedule_csv(division_.schedule, QDir::toNativeSeparators(QDir(dir).filePath(QStringLiteral("block_schedule.csv"))).toStdString());
+            statusBar()->showMessage(tr("저장됨: %1").arg(dir));
+        } catch (const std::exception& e) {
+            QMessageBox::warning(this, tr("내보내기 실패"), QString::fromUtf8(e.what()));
+        }
+    });
     file->addAction(tr("유틸리티 CSV 내보내기…"), this, [this] {
         if (division_.utilities.blocks.empty()) return;
         const QString path = QFileDialog::getSaveFileName(this, tr("유틸리티 내보내기"), QStringLiteral("utilities.csv"), tr("CSV (*.csv)"));
@@ -459,6 +599,7 @@ void MainWindow::onDivisionDone() {
     division_ = divWatch_.result();
     showDivision(division_);
     showUtilities(division_);
+    showSchedule(division_);
     statusBar()->showMessage(tr("블록 분할 완료 (%1 s)").arg(division_.seconds, 0, 'f', 2));
     if (!screenshotDir_.isEmpty()) QTimer::singleShot(300, this, &MainWindow::takeScreenshots);
 }
@@ -599,6 +740,14 @@ void MainWindow::takeScreenshots() {
         tabs_->setCurrentIndex(i);
         QApplication::processEvents();
         grab().save(QDir(screenshotDir_).filePath(QStringLiteral("tab%1.png").arg(i + 1)));
+        if (auto* inner = tabs_->widget(i)->findChild<QTabWidget*>(QStringLiteral("innerTabs"))) {
+            for (int j = 1; j < inner->count(); ++j) {
+                inner->setCurrentIndex(j);
+                QApplication::processEvents();
+                grab().save(QDir(screenshotDir_).filePath(QStringLiteral("tab%1_%2.png").arg(i + 1).arg(j + 1)));
+            }
+            inner->setCurrentIndex(0);
+        }
     }
     QApplication::quit();
 }

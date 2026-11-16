@@ -18,6 +18,7 @@
 #include "hullcad/hydrostatics.hpp"
 #include "hullcad/lines_plan.hpp"
 #include "hullcad/mesh.hpp"
+#include "hullcad/schedule.hpp"
 #include "hullcad/utilities.hpp"
 
 using namespace hullcad;
@@ -257,6 +258,35 @@ int main(int argc, char** argv) {
                         ur.total.air_nm3 / ur.steel_t, ur.total.paint_l / ur.steel_t);
             write_utilities_csv(ur, outdir + "/utilities.csv");
             std::printf("  -> %s/utilities.csv\n", outdir.c_str());
+
+            // Schedule: erection sequence, stages planned backwards, daily profile and peaks.
+            ScheduleResult sr = schedule_utilities(div, ur, yard);
+            std::printf("\n== Schedule and daily utility peaks ==\n");
+            std::printf("First cutting %s, erection %s .. %s, tank tests %s .. %s (%d working days)\n",
+                        sr.calendar.date(sr.first_wd).c_str(), sr.calendar.date(0).c_str(),
+                        sr.calendar.date(sr.testing.start - yard.schedule.test_after_last_erection_days).c_str(),
+                        sr.calendar.date(sr.testing.start).c_str(), sr.calendar.date(sr.testing.end - 1).c_str(), sr.days());
+            std::printf("  %-16s %14s %11s %12s %12s %10s %8s  %s\n", "utility", "peak/day", "date", "mean/day",
+                        "peak rate", "capacity", "use", "peak day: dominant stage, largest item");
+            for (auto& pk : sr.peaks) {
+                std::string top = "-";
+                if (pk.dominant_stage >= 0) {
+                    const char* name = pk.dominant_stage < kStageCount ? stage_key(static_cast<Stage>(pk.dominant_stage)) : "base load";
+                    top = std::string(name) + " " + std::to_string(static_cast<int>(std::lround(100 * pk.stage_share[pk.dominant_stage]))) + "%";
+                    if (!pk.contributors.empty()) top += ", largest item: " + pk.contributors.front().first;
+                }
+                std::printf("  %-16s %14.0f %11s %12.0f %8.1f %-7s %6.0f %7s  %s\n", pk.key.c_str(), pk.daily_peak,
+                            sr.calendar.date(pk.peak_wd).c_str(), pk.daily_mean, pk.peak_rate, pk.rate_unit.c_str(),
+                            pk.capacity, pk.capacity > 0 ? (std::to_string(static_cast<int>(std::lround(100 * pk.utilization))) + "%").c_str() : "-",
+                            top.c_str());
+            }
+            for (auto& pk : sr.peaks)
+                if (pk.capacity > 0 && pk.days_over > 0)
+                    std::printf("  CAPACITY: %s exceeds %.0f %s on %d day(s), peak %.0f %%\n", pk.key.c_str(), pk.capacity,
+                                pk.rate_unit.c_str(), pk.days_over, 100 * pk.utilization);
+            write_block_schedule_csv(sr, outdir + "/block_schedule.csv");
+            write_daily_utilities_csv(sr, outdir + "/daily_utilities.csv");
+            std::printf("  -> %s/block_schedule.csv, %s/daily_utilities.csv\n", outdir.c_str(), outdir.c_str());
         }
 
         // What-if sweep over one yard option, reusing the weight model (zones depend only on
