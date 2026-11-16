@@ -16,6 +16,7 @@
 
 #include "hullcad/cad/bspline.hpp"
 #include "hullcad/cad/hull_param.hpp"
+#include "hullcad/cad/offsets_io.hpp"
 
 namespace hullcad {
 
@@ -94,8 +95,16 @@ struct HullFairing {
 // Fairs every station of the parametric hull. dense_points: offsets per station fed to the
 // fairing (the surface still uses p.points_per_section per station).
 HullFairing fair_hull_sections(const TankerParams& p, const FairingOptions& opt, int dense_points = 481);
+// Fairs every station of an imported offset table (x already shifted to start at 0). The
+// unfaired sections are the table's interpolants resampled to points_per_section.
+HullFairing fair_offset_table(const OffsetTable& t, const FairingOptions& opt, int points_per_section = 49);
+
 // Skinned surface through the faired sections (offsets where fairing was not applicable).
 BSplineSurface build_faired_hull_surface(const HullFairing& f, const TankerParams& p);
+// Skinned surface through the unfaired sections.
+BSplineSurface build_offset_surface(const HullFairing& f);
+// The faired sections as an offset table (for export).
+OffsetTable faired_offset_table(const HullFairing& f);
 
 // Sums over the stations, for reports.
 struct FairingSummary {

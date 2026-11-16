@@ -21,6 +21,9 @@ int main(int argc, char** argv) {
     QCommandLineOption bilge(QStringLiteral("bilge"), QStringLiteral("Midship bilge: g1 (circular) or g2 (curvature-continuous)."),
                              QStringLiteral("g1|g2"));
     cli.addOption(bilge);
+    QCommandLineOption offsets(QStringLiteral("offsets"), QStringLiteral("Build the hull from an offset table (.csv)."),
+                               QStringLiteral("file"));
+    cli.addOption(offsets);
     cli.addOption(yard);
     cli.addOption(shots);
     cli.process(app);
@@ -29,6 +32,7 @@ int main(int argc, char** argv) {
     if (cli.isSet(yard) && !w.loadYard(cli.value(yard))) return 1;
     if (cli.isSet(shots)) w.setScreenshotDir(cli.value(shots));
     if (cli.isSet(bilge)) w.setBilgeG2(cli.value(bilge).toLower() == QStringLiteral("g2"));
+    if (cli.isSet(offsets) && !w.loadOffsets(cli.value(offsets))) return 1;
     w.show();
     w.start();
     return app.exec();

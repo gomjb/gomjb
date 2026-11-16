@@ -28,6 +28,7 @@ struct HullRun {
     std::string lines_svg;
     TankVolumes tanks;                // cargo / ballast tank volumes (tank-test utilities)
     HullFairing fairing;              // section fairing analysis (always computed)
+    std::shared_ptr<const OffsetTable> offsets;  // imported offsets, or null for the parametric hull
     bool faired_surface = false;      // surface built from the faired sections
     double seconds = 0;
     std::string error;                // non-empty: the run failed
@@ -49,8 +50,9 @@ struct DivisionRun {
 };
 
 // Hull surface, mesh, hydrostatic table, GZ curve (fixed trim) and lines plan.
+// table != nullptr: the hull comes from an imported offset table (main dimensions from the table).
 HullRun run_hull(const TankerParams& p, double KG, int threads, const FairingOptions& fairing = {},
-                 bool faired_surface = false);
+                 bool faired_surface = false, std::shared_ptr<const OffsetTable> table = nullptr);
 // GZ curve only, on an existing hull.
 std::vector<GZPoint> run_gz(const HullRun& hull, double KG, int threads);
 // Structure, weight model and block division (automatic if manual_frames is empty).

@@ -3,6 +3,7 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <algorithm>
 #include <vector>
 
@@ -13,6 +14,7 @@
 #include "hullcad/naval/hydrostatics.hpp"
 #include "hullcad/cad/lines_plan.hpp"
 #include "hullcad/cad/mesh.hpp"
+#include "hullcad/cad/offsets_io.hpp"
 #include "hullcad/fairing/fairing.hpp"
 #include "hullcad/planning/schedule.hpp"
 #include "hullcad/production/daily_load.hpp"
@@ -436,6 +438,90 @@ static void test_fairing() {
     CHECK(!hf.sections.back().ok || hf.sections.back().max_deviation <= 2 * so.tolerance);
 }
 
+static void test_offset_tables() {
+    namespace fs = std::filesystem;
+    const fs::path dir = fs::temp_directory_path();
+    auto write = [&](const char* name, const std::string& text) {
+        const auto path = (dir / name).string();
+        std::ofstream(path) << text;
+        return path;
+    };
+    auto throws = [](const std::string& path, const char* expect) {
+        try { read_offsets_csv(path); } catch (const std::invalid_argument& e) {
+            return std::string(e.what()).find(expect) != std::string::npos;
+        }
+        return false;
+    };
+
+    // Round trip of a parametric table.
+    TankerParams p;
+    OffsetTable t = parametric_offset_table(p, 25);
+    const auto rt = (dir / "hullcad_offsets_rt.csv").string();
+    write_offsets_csv(t, rt);
+    OffsetTable back = read_offsets_csv(rt);
+    CHECK(back.stations.size() == t.stations.size());
+    double err = 0;
+    for (size_t i = 0; i < t.stations.size(); ++i)
+        for (size_t j = 0; j < t.stations[i].size(); ++j) err = std::max(err, norm(back.stations[i][j] - t.stations[i][j]));
+    CHECK(err < 1e-4);
+    TankerParams q = params_for_table(back, TankerParams{});
+    CHECK_NEAR(q.Lpp, p.Lpp, 1e-3);
+    CHECK_NEAR(q.B, p.B, 1e-3);
+    CHECK_NEAR(q.D, p.D, 1e-3);
+
+    // Millimetres, semicolons, no station column (grouped by x), a deck-first station, shifted x.
+    const auto mm = write("hullcad_offsets_mm.csv",
+                          "# units = mm\nx;z;y\n"
+                          "5000;0;0\n5000;0;1000\n5000;500;1500\n5000;2000;1600\n"
+                          "15000;2000;1600\n15000;500;1500\n15000;0;1000\n15000;0;0\n"
+                          "25000;0;0\n25000;0;1000\n25000;500;1500\n25000;2000;1600\n"
+                          "35000;0;0\n35000;0;1000\n35000;500;1500\n35000;2000;1600\n");
+    OffsetTable m = read_offsets_csv(mm);
+    CHECK(m.stations.size() == 4);
+    CHECK_NEAR(m.x_shift, -5.0, 1e-12);
+    CHECK_NEAR(m.stations[1].front().x, 10.0, 1e-12);
+    CHECK_NEAR(m.stations[1].front().y, 0.0, 0.0);   // reversed to keel-first
+    CHECK_NEAR(m.stations[1].back().z, 2.0, 1e-12);
+    CHECK_NEAR(describe(m).max_half_breadth, 1.6, 1e-12);
+
+    CHECK(throws(write("hullcad_off_bad1.csv", "x,y\n0,0\n"), "x, y and z"));
+    CHECK(throws(write("hullcad_off_bad2.csv", "x,y,z\n0,0,0\n0,1,0\n0,1,1\n"), "fewer than 4"));
+    CHECK(throws(write("hullcad_off_bad3.csv", "x,y,z\n0,0,0\n0,abc,0\n"), ":3:"));
+    CHECK(throws(write("hullcad_off_bad4.csv", "x,y,z\n0,1,0\n0,2,0\n0,2,1\n0,3,2\n"), "centreline"));
+
+    // A measured-style table (25 points, +-1 mm, rounded to mm): fairing removes most inflections,
+    // keeps the displacement, and keeps the flat blocks flat.
+    OffsetTable noisy = parametric_offset_table(p, 25, 0.001, 0.001, 7);
+    FairingOptions o;
+    o.junction_continuity = 1;
+    o.offset_accuracy = 0.001;
+    HullFairing hf = fair_offset_table(noisy, o, p.points_per_section);
+    FairingSummary sm = summarize(hf);
+    CHECK(sm.not_applicable == 0);
+    CHECK(sm.max_deviation <= o.tolerance + 1e-9);
+    CHECK(sm.inflections_faired * 5 < sm.inflections_before);
+    auto be = make_cpu_backend(4);
+    ShipRef ref{p.Lpp, p.B, p.Lpp / 2, 1.025};
+    be->upload(tessellate_hull(build_hull_surface(p), 240, 80));
+    const double v0 = hydrostatic_table(*be, ref, {p.T})[0].volume;
+    const TriMesh faired = tessellate_hull(build_faired_hull_surface(hf, p), 240, 80);
+    be->upload(faired);
+    CHECK(std::fabs(hydrostatic_table(*be, ref, {p.T})[0].volume / v0 - 1.0) < 5e-4);
+    // Midship bottom: the faired surface is flat within 1 cm (flat-block criterion), the raw one is not.
+    auto bottom_range = [&](const TriMesh& msh) {
+        double lo = 1e9, hi = -1e9;
+        for (double xx : {100.0, 120.0, 140.0})
+            for (auto& g : slice(msh, 0, xx))
+                for (auto& pt : {g.first, g.second})
+                    if (pt.y > 0.3 && pt.y < 19.0 && pt.z < 1) { lo = std::min(lo, pt.z); hi = std::max(hi, pt.z); }
+        return hi - lo;
+    };
+    // Raw: about 15 mm (beyond the 1 cm flat-block test); faired: a few mm, left by fitting each
+    // station on its own (the curve-network fairing aligns stations along the ship).
+    CHECK(bottom_range(faired) < 0.005);
+    CHECK(bottom_range(tessellate_hull(build_offset_surface(hf), 240, 80)) > 0.01);
+}
+
 static void test_calendar() {
     CHECK(days_from_date("1970-01-01") == 0);
     CHECK(days_from_date("2027-03-02") == 20879);
@@ -628,6 +714,7 @@ int main() {
     test_yard_profile();
     test_calendar();
     test_fairing();
+    test_offset_tables();
     test_box_takeoff_and_utilities();
     test_tanker_division();
     test_bspline();

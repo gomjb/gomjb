@@ -18,6 +18,7 @@
 #include "hullcad/naval/hydrostatics.hpp"
 #include "hullcad/cad/lines_plan.hpp"
 #include "hullcad/cad/mesh.hpp"
+#include "hullcad/cad/offsets_io.hpp"
 #include "hullcad/fairing/fairing.hpp"
 #include "hullcad/planning/schedule.hpp"
 #include "hullcad/production/daily_load.hpp"
@@ -62,7 +63,10 @@ int main(int argc, char** argv) {
     int threads = 0;
     bool run_bench = true;
     YardProfile yard;
-    bool bilge_g2 = false, fair_surface = false;
+    bool bilge_g2 = false, fair_surface = false, raw_surface = false;
+    std::string offsets_file, export_offsets_file;
+    double offset_accuracy_mm = 1.0, offset_noise_mm = 0.0;
+    int offset_points = 25;
     double fair_tolerance_mm = 3.0;
     std::vector<std::pair<std::string, std::string>> overrides;
     std::string sweep_key;
@@ -86,6 +90,12 @@ int main(int argc, char** argv) {
                 bilge_g2 = b == "g2";
             } else if (a == "--fair-surface") fair_surface = true;
             else if (a == "--fair-tolerance" && i + 1 < argc) fair_tolerance_mm = std::atof(argv[++i]);
+            else if (a == "--offsets" && i + 1 < argc) offsets_file = argv[++i];
+            else if (a == "--offset-accuracy" && i + 1 < argc) offset_accuracy_mm = std::atof(argv[++i]);
+            else if (a == "--raw-surface") raw_surface = true;
+            else if (a == "--export-offsets" && i + 1 < argc) export_offsets_file = argv[++i];
+            else if (a == "--offset-points" && i + 1 < argc) offset_points = std::atoi(argv[++i]);
+            else if (a == "--offset-noise" && i + 1 < argc) offset_noise_mm = std::atof(argv[++i]);
             else if (a == "--yard" && i + 1 < argc) yard = load_yard_profile(argv[++i], yard);
             else if (a == "--set" && i + 1 < argc) {
                 std::string kv = argv[++i];
@@ -111,7 +121,9 @@ int main(int argc, char** argv) {
                     "usage: hullcad_demo [--out DIR] [--threads N] [--no-bench]\n"
                     "                    [--yard FILE.ini] [--set section.key=value]... [--write-yard FILE.ini]\n"
                     "                    [--butts FR,FR,...] [--sweep section.key=v1,v2,...]\n"
-                    "                    [--bilge g1|g2] [--fair-surface] [--fair-tolerance MM]\n");
+                    "                    [--bilge g1|g2] [--fair-surface] [--fair-tolerance MM]\n"
+                    "                    [--offsets FILE.csv [--offset-accuracy MM] [--raw-surface]]\n"
+                    "                    [--export-offsets FILE.csv [--offset-points N] [--offset-noise MM]]\n");
                 return 2;
             }
         }
@@ -123,19 +135,43 @@ int main(int argc, char** argv) {
 
     TankerParams p;
     if (bilge_g2) p.n_mid = 4.0;
+
+    if (!export_offsets_file.empty()) {
+        // Offset table of the parametric hull, rounded to the millimetre like a printed table.
+        write_offsets_csv(parametric_offset_table(p, offset_points, offset_noise_mm / 1000.0, 0.001), export_offsets_file);
+        std::printf("offset table (%d stations x %d points, noise +-%.1f mm) written to %s\n", p.stations, offset_points,
+                    offset_noise_mm, export_offsets_file.c_str());
+        return 0;
+    }
+    OffsetTable table;
+    const bool imported = !offsets_file.empty();
+    if (imported) {
+        try {
+            table = read_offsets_csv(offsets_file);
+        } catch (const std::exception& e) {
+            std::printf("error: %s\n", e.what());
+            return 2;
+        }
+        p = params_for_table(table, p);
+        const OffsetTableInfo info = describe(table);
+        std::printf("Offset table %s: %d stations, %d-%d points, Lpp %.2f m, B %.2f m, D %.2f m (x shifted by %.3f m)\n",
+                    offsets_file.c_str(), info.stations, info.min_points, info.max_points, p.Lpp, p.B, p.D, table.x_shift);
+    }
     ShipRef ref{p.Lpp, p.B, 0.5 * p.Lpp, 1.025};
 
     auto t0 = std::chrono::steady_clock::now();
-    auto rows = offsets(p);
-    // Section fairing (always analysed; the surface uses the faired sections on request).
+    // Section fairing (always analysed). Parametric hull: the surface uses the design sections
+    // unless --fair-surface. Imported table: the surface uses the faired sections unless --raw-surface.
     FairingOptions fo;
     fo.tolerance = fair_tolerance_mm / 1000.0;
     fo.junction_continuity = p.n_mid > 2.5 ? 2 : 1;
-    HullFairing hf = fair_hull_sections(p, fo);
-    BSplineSurface S = fair_surface ? build_faired_hull_surface(hf, p) : skin(rows, 3, 3);
+    if (imported) fo.offset_accuracy = offset_accuracy_mm / 1000.0;
+    HullFairing hf = imported ? fair_offset_table(table, fo, p.points_per_section) : fair_hull_sections(p, fo);
+    if (imported) fair_surface = !raw_surface;
+    BSplineSurface S = fair_surface ? build_faired_hull_surface(hf, p) : build_offset_surface(hf);
     TriMesh mesh = tessellate_hull(S, 240, 80);
-    std::printf("Hull surface: bicubic B-spline, %d x %d control points (from %zu stations x %d points)\n",
-                S.nu, S.nv, rows.size(), p.points_per_section);
+    std::printf("Hull surface: bicubic B-spline, %d x %d control points (from %zu stations x %d points, %s sections)\n",
+                S.nu, S.nv, hf.sections.size(), p.points_per_section, fair_surface ? "faired" : "unfaired");
     std::printf("Mesh: %zu triangles, closed+consistent: %s  (built in %.3f s)\n", mesh.tris.size(),
                 is_closed_and_consistent(mesh) ? "yes" : "NO", seconds_since(t0));
 
@@ -152,13 +188,11 @@ int main(int argc, char** argv) {
                 d.F.x - ref.x_ref, d.TPC, d.MCT);
     std::printf("BMt %.2f m  KMt %.2f m  BMl %.1f m\n", d.BM_T, d.KM_T, d.BM_L);
 
-    // Offsets.
+    // Offsets of the sections the surface was built from.
     {
-        std::ofstream f(outdir + "/offsets.csv");
-        f << "station,x,point,y,z\n";
-        for (size_t i = 0; i < rows.size(); ++i)
-            for (size_t j = 0; j < rows[i].size(); ++j)
-                f << i << ',' << rows[i][j].x << ',' << j << ',' << rows[i][j].y << ',' << rows[i][j].z << '\n';
+        OffsetTable used;
+        for (auto& sc : hf.sections) used.stations.push_back(fair_surface ? sc.faired : sc.offsets);
+        write_offsets_csv(used, outdir + "/offsets.csv");
     }
 
     // Hydrostatic table.
@@ -201,8 +235,8 @@ int main(int argc, char** argv) {
 
     {
         const FairingSummary fs = summarize(hf);
-        std::printf("\n== Section fairing (%s bilge, %s joints, tolerance %.1f mm, surface from %s sections) ==\n",
-                    p.n_mid > 2.5 ? "curvature-continuous" : "circular", fo.junction_continuity >= 2 ? "G2" : "G1",
+        std::printf("\n== Section fairing (%s, %s joints, tolerance %.1f mm, surface from %s sections) ==\n",
+                    imported ? "imported offset table" : p.n_mid > 2.5 ? "curvature-continuous bilge" : "circular bilge", fo.junction_continuity >= 2 ? "G2" : "G1",
                     fair_tolerance_mm, fair_surface ? "faired" : "design");
         std::printf("%d stations, %d faired, %d not applicable; max deviation %.1f mm; inflections %d -> %d\n", fs.stations,
                     fs.stations - fs.not_applicable, fs.not_applicable, fs.max_deviation * 1000, fs.inflections_before,

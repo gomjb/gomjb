@@ -299,7 +299,9 @@ FairedCurve fair_curve(const std::vector<Vec3>& pts, const FairingOptions& o) {
         if (k > 0) k = back_off(k, 0, 1);
         if (j < m) j = back_off(j, m, -1);
     }
-    if (j - k < 4) { k = 0; j = m; }  // (almost) everything straight: fair as one curve
+    // The curve between the runs needs at least one offset of its own (sparse tables may have
+    // a single offset on the bilge); otherwise fair the section as one curve.
+    if (j - k < 2) { k = 0; j = m; }
 
     // Straight runs follow their least-squares lines (the measured points carry noise).
     Vec3 lc{}, ld{}, tc{}, td{};
@@ -420,6 +422,43 @@ CurveQuality curve_quality(const std::vector<CurvatureSample>& s) {
     return q;
 }
 
+namespace {
+
+// Fairs one station. input: the points fitted; before_pts: the points whose interpolant is the
+// unfaired section; offsets: unfaired section with the surface's point count (kept when the
+// fairing is not applicable).
+SectionFairing fair_station(double x, const std::vector<Vec3>& input, const std::vector<Vec3>& before_pts,
+                            std::vector<Vec3> offsets, const FairingOptions& o, int npts) {
+    SectionFairing s;
+    s.x = x;
+    s.offsets = std::move(offsets);
+    s.composite = fair_curve(input, o);
+    s.max_deviation = s.composite.max_deviation;
+    s.ok = s.max_deviation <= 2.0 * o.tolerance;
+    s.faired = s.ok ? s.composite.sample(npts) : s.offsets;
+    s.faired.front().y = 0.0;  // keel on the centreline
+    s.before = interpolate(before_pts, 3);
+    s.after = interpolate(s.faired, 3);
+    s.q_before = curve_quality(curvature_samples(s.before, 1200));
+    s.q_after = curve_quality(curvature_samples(s.after, 1200));
+    s.q_composite = curve_quality(curvature_samples(s.composite, 1200));
+    return s;
+}
+
+// n points equally spaced in arc length along the interpolant of pts.
+std::vector<Vec3> resample(const std::vector<Vec3>& pts, int n) {
+    const BSplineCurve c = interpolate(pts, 3);
+    const auto t = arc_table(c, 2000);
+    const double L = t.back().second;
+    std::vector<Vec3> out;
+    for (int k = 0; k < n; ++k) out.push_back(c.eval(u_at(t, L * k / (n - 1))));
+    out.front() = pts.front();
+    out.back() = pts.back();
+    return out;
+}
+
+}  // namespace
+
 HullFairing fair_hull_sections(const TankerParams& p, const FairingOptions& opt, int dense_points) {
     HullFairing h;
     h.options = opt;
@@ -428,21 +467,24 @@ HullFairing fair_hull_sections(const TankerParams& p, const FairingOptions& opt,
     o.end_tangent = {0, 0, 1};    // vertical at the deck edge
     for (double x : station_positions(p)) {
         const SectionShape shape = section_at(p, x);
-        SectionFairing s;
-        s.x = x;
-        s.offsets = section_points(shape, x, p.D, p.points_per_section);
+        auto offsets = section_points(shape, x, p.D, p.points_per_section);
         const auto dense = section_points(shape, x, p.D, dense_points);
-        s.composite = fair_curve(dense, o);
-        s.max_deviation = s.composite.max_deviation;
-        s.ok = s.max_deviation <= 2.0 * opt.tolerance;
-        s.faired = s.ok ? s.composite.sample(p.points_per_section) : s.offsets;
-        s.faired.front().y = 0.0;  // keel on the centreline
-        s.before = interpolate(s.offsets, 3);
-        s.after = interpolate(s.faired, 3);
-        s.q_before = curve_quality(curvature_samples(s.before, 1200));
-        s.q_after = curve_quality(curvature_samples(s.after, 1200));
-        s.q_composite = curve_quality(curvature_samples(s.composite, 1200));
-        h.sections.push_back(std::move(s));
+        auto before = offsets;
+        h.sections.push_back(fair_station(x, dense, before, std::move(offsets), o, p.points_per_section));
+    }
+    return h;
+}
+
+HullFairing fair_offset_table(const OffsetTable& t, const FairingOptions& opt, int points_per_section) {
+    HullFairing h;
+    h.options = opt;
+    for (auto& st : t.stations) {
+        FairingOptions o = opt;
+        // Horizontal at the keel when the section starts flat-ish (no keel knuckle); deck end free.
+        const Vec3 d = st[1] - st[0];
+        o.start_tangent = std::fabs(d.z) <= std::tan(20.0 * 3.14159265358979 / 180.0) * std::fabs(d.y) ? Vec3{0, 1, 0} : Vec3{};
+        o.end_tangent = Vec3{};
+        h.sections.push_back(fair_station(st.front().x, st, st, resample(st, points_per_section), o, points_per_section));
     }
     return h;
 }
@@ -463,6 +505,19 @@ BSplineSurface build_faired_hull_surface(const HullFairing& f, const TankerParam
     std::vector<std::vector<Vec3>> rows;
     for (auto& s : f.sections) rows.push_back(s.faired);
     return skin(rows, 3, 3);
+}
+
+BSplineSurface build_offset_surface(const HullFairing& f) {
+    std::vector<std::vector<Vec3>> rows;
+    for (auto& s : f.sections) rows.push_back(s.offsets);
+    return skin(rows, 3, 3);
+}
+
+OffsetTable faired_offset_table(const HullFairing& f) {
+    OffsetTable t;
+    t.source = "faired";
+    for (auto& s : f.sections) t.stations.push_back(s.faired);
+    return t;
 }
 
 }  // namespace hullcad

@@ -33,6 +33,8 @@ public:
     void setScreenshotDir(const QString& dir) { screenshotDir_ = dir; }
     void start();
     void setBilgeG2(bool g2);
+    bool loadOffsets(const QString& path);
+    void useParametric();
 
 private slots:
     void runHull();
@@ -68,6 +70,9 @@ private:
     QComboBox* bilgeCombo_ = nullptr;
     QDoubleSpinBox* fairTolSpin_ = nullptr;
     QCheckBox* fairSurfaceCheck_ = nullptr;
+    QDoubleSpinBox* accuracySpin_ = nullptr;
+    QLabel* sourceLabel_ = nullptr;
+    std::shared_ptr<const hullcad::OffsetTable> table_;  // imported offsets (null: parametric hull)
     QLabel* fairSummary_ = nullptr;
     QSpinBox* stationSpin_ = nullptr;
     CombPlot* combPlot_ = nullptr;

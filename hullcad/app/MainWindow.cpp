@@ -8,6 +8,7 @@
 #include <QDoubleSpinBox>
 #include <QFile>
 #include <QFileDialog>
+#include <QFileInfo>
 #include <QFormLayout>
 #include <QGroupBox>
 #include <QHBoxLayout>
@@ -136,6 +137,32 @@ void MainWindow::start() { runHull(); }
 
 void MainWindow::setBilgeG2(bool g2) { bilgeCombo_->setCurrentIndex(g2 ? 1 : 0); }
 
+bool MainWindow::loadOffsets(const QString& path) {
+    try {
+        auto t = std::make_shared<OffsetTable>(read_offsets_csv(QDir::toNativeSeparators(path).toStdString()));
+        const OffsetTableInfo info = describe(*t);
+        table_ = t;
+        fairSurfaceCheck_->setChecked(true);  // measured / entered offsets: build from the faired sections
+        bilgeCombo_->setEnabled(false);
+        sourceLabel_->setText(tr("<b>가져온 오프셋</b>: %1<br>스테이션 %2개 × 점 %3~%4개, Lpp %5 m, 최대 반폭 %6 m, 최대 높이 %7 m. "
+                                 "주요 치수(Lpp, B, D)는 오프셋에서 정합니다.")
+                                  .arg(QFileInfo(path).fileName()).arg(info.stations).arg(info.min_points).arg(info.max_points)
+                                  .arg(info.length, 0, 'f', 2).arg(info.max_half_breadth, 0, 'f', 2).arg(info.max_height, 0, 'f', 2));
+        statusBar()->showMessage(tr("오프셋 테이블: %1").arg(path));
+        return true;
+    } catch (const std::exception& e) {
+        QMessageBox::warning(this, tr("오프셋 테이블 오류"), QString::fromUtf8(e.what()));
+        return false;
+    }
+}
+
+void MainWindow::useParametric() {
+    table_.reset();
+    fairSurfaceCheck_->setChecked(false);
+    bilgeCombo_->setEnabled(true);
+    sourceLabel_->setText(tr("파라메트릭 선형 (위 파라미터)"));
+}
+
 QWidget* MainWindow::buildHullTab() {
     auto* split = new QSplitter(Qt::Horizontal);
     auto* left = new QWidget;
@@ -172,7 +199,36 @@ QWidget* MainWindow::buildHullTab() {
     fairSurfaceCheck_->setToolTip(tr("파라메트릭 선형처럼 오차 없는 단면은 원래 단면으로 곡면을 만드는 편이 더 정확합니다.\n"
                                      "측정·입력 오차가 있는 오프셋에 사용하세요."));
     fform->addRow(QString(), fairSurfaceCheck_);
+    accuracySpin_ = new QDoubleSpinBox;
+    accuracySpin_->setRange(0, 20);
+    accuracySpin_->setDecimals(1);
+    accuracySpin_->setSuffix(QStringLiteral(" mm"));
+    accuracySpin_->setValue(1.0);
+    accuracySpin_->setToolTip(tr("가져온 오프셋의 예상 오차(측정·입력·반올림). 평저·평측 직선 구간을 찾을 때 씁니다."));
+    fform->addRow(tr("오프셋 정밀도"), accuracySpin_);
     lv->addWidget(fbox);
+
+    auto* srcBox = new QGroupBox(tr("선형 출처"));
+    auto* sv = new QVBoxLayout(srcBox);
+    sourceLabel_ = new QLabel(tr("파라메트릭 선형 (위 파라미터)"));
+    sourceLabel_->setWordWrap(true);
+    sv->addWidget(sourceLabel_);
+    auto* srcRow = new QHBoxLayout;
+    auto* importBtn = new QPushButton(tr("오프셋 불러오기…"));
+    auto* paramBtn = new QPushButton(tr("파라메트릭 선형 사용"));
+    connect(importBtn, &QPushButton::clicked, this, [this] {
+        const QString path = QFileDialog::getOpenFileName(this, tr("오프셋 테이블 열기"), QString(),
+                                                          tr("오프셋 테이블 (*.csv *.txt);;모든 파일 (*)"));
+        if (!path.isEmpty() && loadOffsets(path)) runHull();
+    });
+    connect(paramBtn, &QPushButton::clicked, this, [this] {
+        useParametric();
+        runHull();
+    });
+    srcRow->addWidget(importBtn);
+    srcRow->addWidget(paramBtn);
+    sv->addLayout(srcRow);
+    lv->addWidget(srcBox);
     hullButton_ = new QPushButton(tr("선형 생성 · 계산"));
     hullButton_->setDefault(true);
     connect(hullButton_, &QPushButton::clicked, this, &MainWindow::runHull);
@@ -523,6 +579,24 @@ void MainWindow::showUtilities(const DivisionRun& d) {
 
 void MainWindow::buildMenus() {
     auto* file = menuBar()->addMenu(tr("파일(&F)"));
+    file->addAction(tr("오프셋 테이블 불러오기…"), this, [this] {
+        const QString path = QFileDialog::getOpenFileName(this, tr("오프셋 테이블 열기"), QString(),
+                                                          tr("오프셋 테이블 (*.csv *.txt);;모든 파일 (*)"));
+        if (!path.isEmpty() && loadOffsets(path)) runHull();
+    });
+    file->addAction(tr("오프셋 테이블 내보내기 (곡면 단면)…"), this, [this] {
+        if (!hull_) return;
+        const QString path = QFileDialog::getSaveFileName(this, tr("오프셋 테이블 저장"), QStringLiteral("offsets.csv"), tr("CSV (*.csv)"));
+        if (path.isEmpty()) return;
+        OffsetTable used;
+        for (auto& sc : hull_->fairing.sections) used.stations.push_back(hull_->faired_surface ? sc.faired : sc.offsets);
+        try {
+            write_offsets_csv(used, QDir::toNativeSeparators(path).toStdString());
+        } catch (const std::exception& e) {
+            QMessageBox::warning(this, tr("내보내기 실패"), QString::fromUtf8(e.what()));
+        }
+    });
+    file->addSeparator();
     file->addAction(tr("야드 프로파일 열기…"), QKeySequence::Open, this, &MainWindow::openYard);
     file->addAction(tr("야드 프로파일 저장…"), QKeySequence::Save, this, &MainWindow::saveYard);
     file->addSeparator();
@@ -580,9 +654,13 @@ void MainWindow::runHull() {
     const int n = threads();
     FairingOptions fo;
     fo.tolerance = fairTolSpin_->value() / 1000.0;
-    fo.junction_continuity = p.n_mid > 2.5 ? 2 : 1;  // G2 joints only where the design bilge is G2
+    fo.junction_continuity = (!table_ && p.n_mid > 2.5) ? 2 : 1;  // G2 joints only where the design bilge is G2
+    fo.offset_accuracy = table_ ? accuracySpin_->value() / 1000.0 : 0.0;
     const bool fair_surface = fairSurfaceCheck_->isChecked();
-    hullWatch_.setFuture(QtConcurrent::run([p, KG, n, fo, fair_surface] { return run_hull(p, KG, n, fo, fair_surface); }));
+    auto table = table_;
+    hullWatch_.setFuture(QtConcurrent::run([p, KG, n, fo, fair_surface, table] {
+        return run_hull(p, KG, n, fo, fair_surface, table);
+    }));
 }
 
 void MainWindow::onHullDone() {
@@ -618,7 +696,10 @@ void MainWindow::showHull(const HullRun& h) {
             .arg(d.B.x - 0.5 * p.Lpp, 0, 'f', 2).arg(d.F.x - 0.5 * p.Lpp, 0, 'f', 2)
             .arg(d.B.z, 0, 'f', 2).arg(d.KM_T, 0, 'f', 2)
             .arg(d.TPC, 0, 'f', 1).arg(d.MCT, 0, 'f', 0)
-            .arg(h.mesh.tris.size()));
+            .arg(h.mesh.tris.size())
+        + (h.offsets ? tr("<p>선형: 가져온 오프셋 (%1), 곡면: %2 단면</p>").arg(QFileInfo(QString::fromStdString(h.offsets->source)).fileName(),
+                                                                       h.faired_surface ? tr("순정") : tr("원래"))
+                   : QString()));
     linesView_->setSvg(QByteArray::fromStdString(h.lines_svg));
 
     hydroTable_->setSortingEnabled(false);
@@ -643,7 +724,7 @@ void MainWindow::showHull(const HullRun& h) {
             .arg(fs.inflections_before).arg(fs.inflections_faired)
             .arg(h.fairing.options.junction_continuity >= 2 ? tr("G2 (곡률 연속)") : tr("G1 (접선 연속)"))
             .arg(h.faired_surface ? tr("순정 단면 사용") : tr("원래 단면 사용"))
-            .arg(h.params.n_mid > 2.5 ? QString()
+            .arg(h.offsets || h.params.n_mid > 2.5 ? QString()
                                       : tr("<br><span style='color:#8a5a00'>원호 빌지는 평저·평측과 만나는 곳에서 곡률이 0 → 1/R로 계단처럼 뜁니다(G1). "
                                            "순정은 이 계단을 설계대로 유지하므로 곡률 변화 에너지가 큽니다. 2차 미분까지 매끄럽게 하려면 "
                                            "'곡률 연속 빌지 (G2)'를 선택하세요.</span>")));

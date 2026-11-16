@@ -35,7 +35,7 @@ hullcad_module(core
 
 # 선형 CAD: B-spline curves/surfaces, parametric hull form, mesh, lines plan
 hullcad_module(cad
-  SOURCES cad/src/bspline.cpp cad/src/hull_param.cpp cad/src/mesh.cpp cad/src/lines_plan.cpp
+  SOURCES cad/src/bspline.cpp cad/src/hull_param.cpp cad/src/mesh.cpp cad/src/lines_plan.cpp cad/src/offsets_io.cpp
   DEPS hullcad::core)
 
 # 선형 순정: penalised curve fairing, curvature analysis, faired hull sections
