@@ -5,14 +5,15 @@
 #include <string>
 #include <vector>
 
-#include "hullcad/blocks.hpp"
-#include "hullcad/hull_param.hpp"
-#include "hullcad/hydrostatics.hpp"
-#include "hullcad/mesh.hpp"
-#include "hullcad/schedule.hpp"
-#include "hullcad/structure.hpp"
-#include "hullcad/utilities.hpp"
-#include "hullcad/yard.hpp"
+#include "hullcad/production_design/blocks.hpp"
+#include "hullcad/cad/hull_param.hpp"
+#include "hullcad/naval/hydrostatics.hpp"
+#include "hullcad/cad/mesh.hpp"
+#include "hullcad/planning/schedule.hpp"
+#include "hullcad/structure/structure.hpp"
+#include "hullcad/production/daily_load.hpp"
+#include "hullcad/production/utilities.hpp"
+#include "hullcad/project/yard_profile.hpp"
 
 namespace hullcad::app {
 
@@ -35,7 +36,8 @@ struct DivisionRun {
     std::string svg;
     Mass steel_total;
     UtilityReport utilities;          // work-driven utility estimate of the blocks
-    ScheduleResult schedule;          // production schedule and daily utility profile
+    ProductionSchedule schedule;      // planning: block stage schedule
+    DailyUtilityProfile daily;        // production: daily utility load and peaks
     std::string schedule_error;       // e.g. malformed schedule options
     YardProfile yard;                 // profile the run used
     bool manual = false;

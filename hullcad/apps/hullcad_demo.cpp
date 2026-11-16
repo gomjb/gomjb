@@ -12,14 +12,16 @@
 #include <thread>
 #include <vector>
 
-#include "hullcad/blocks.hpp"
-#include "hullcad/compute_backend.hpp"
-#include "hullcad/hull_param.hpp"
-#include "hullcad/hydrostatics.hpp"
-#include "hullcad/lines_plan.hpp"
-#include "hullcad/mesh.hpp"
-#include "hullcad/schedule.hpp"
-#include "hullcad/utilities.hpp"
+#include "hullcad/production_design/blocks.hpp"
+#include "hullcad/naval/compute_backend.hpp"
+#include "hullcad/cad/hull_param.hpp"
+#include "hullcad/naval/hydrostatics.hpp"
+#include "hullcad/cad/lines_plan.hpp"
+#include "hullcad/cad/mesh.hpp"
+#include "hullcad/planning/schedule.hpp"
+#include "hullcad/production/daily_load.hpp"
+#include "hullcad/production/utilities.hpp"
+#include "hullcad/project/yard_profile.hpp"
 
 using namespace hullcad;
 
@@ -260,12 +262,13 @@ int main(int argc, char** argv) {
             std::printf("  -> %s/utilities.csv\n", outdir.c_str());
 
             // Schedule: erection sequence, stages planned backwards, daily profile and peaks.
-            ScheduleResult sr = schedule_utilities(div, ur, yard);
+            ProductionSchedule ps = schedule_blocks(div, yard);               // planning
+            DailyUtilityProfile sr = daily_utilities(ps, ur, yard.capacity);  // production
             std::printf("\n== Schedule and daily utility peaks ==\n");
             std::printf("First cutting %s, erection %s .. %s, tank tests %s .. %s (%d working days)\n",
-                        sr.calendar.date(sr.first_wd).c_str(), sr.calendar.date(0).c_str(),
-                        sr.calendar.date(sr.testing.start - yard.schedule.test_after_last_erection_days).c_str(),
-                        sr.calendar.date(sr.testing.start).c_str(), sr.calendar.date(sr.testing.end - 1).c_str(), sr.days());
+                        sr.calendar.date(sr.first_wd).c_str(), ps.calendar.date(0).c_str(),
+                        ps.calendar.date(ps.last_erection_wd).c_str(),
+                        ps.calendar.date(ps.testing.start).c_str(), ps.calendar.date(ps.testing.end - 1).c_str(), sr.days());
             std::printf("  %-16s %14s %11s %12s %12s %10s %8s  %s\n", "utility", "peak/day", "date", "mean/day",
                         "peak rate", "capacity", "use", "peak day: dominant stage, largest item");
             for (auto& pk : sr.peaks) {
@@ -284,7 +287,7 @@ int main(int argc, char** argv) {
                 if (pk.capacity > 0 && pk.days_over > 0)
                     std::printf("  CAPACITY: %s exceeds %.0f %s on %d day(s), peak %.0f %%\n", pk.key.c_str(), pk.capacity,
                                 pk.rate_unit.c_str(), pk.days_over, 100 * pk.utilization);
-            write_block_schedule_csv(sr, outdir + "/block_schedule.csv");
+            write_block_schedule_csv(ps, outdir + "/block_schedule.csv");
             write_daily_utilities_csv(sr, outdir + "/daily_utilities.csv");
             std::printf("  -> %s/block_schedule.csv, %s/daily_utilities.csv\n", outdir.c_str(), outdir.c_str());
         }

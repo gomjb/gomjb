@@ -6,14 +6,16 @@
 #include <algorithm>
 #include <vector>
 
-#include "hullcad/blocks.hpp"
-#include "hullcad/bspline.hpp"
-#include "hullcad/compute_backend.hpp"
-#include "hullcad/hull_param.hpp"
-#include "hullcad/hydrostatics.hpp"
-#include "hullcad/mesh.hpp"
-#include "hullcad/schedule.hpp"
-#include "hullcad/utilities.hpp"
+#include "hullcad/production_design/blocks.hpp"
+#include "hullcad/cad/bspline.hpp"
+#include "hullcad/naval/compute_backend.hpp"
+#include "hullcad/cad/hull_param.hpp"
+#include "hullcad/naval/hydrostatics.hpp"
+#include "hullcad/cad/mesh.hpp"
+#include "hullcad/planning/schedule.hpp"
+#include "hullcad/production/daily_load.hpp"
+#include "hullcad/production/utilities.hpp"
+#include "hullcad/project/yard_profile.hpp"
 
 using namespace hullcad;
 
@@ -261,13 +263,13 @@ static void test_box_takeoff_and_utilities() {
     d.blocks.push_back(b);
     TankVolumes tv{1000.0, 500.0};
     UtilityReport r = estimate_utilities(d, tv, y);
-    const double fillet_kg = q.fillet_length * y.takeoff.fillet_deposit;
-    const double saw_kg = q.shop_butt_length * y.takeoff.shop_butt_deposit;  // flat block -> SAW
+    const double fillet_kg = q.fillet_length * y.util_welding.fillet_deposit;
+    const double saw_kg = q.shop_butt_length * y.util_welding.shop_butt_deposit;  // flat block -> SAW
     const auto& W = r.by_stage[static_cast<int>(Stage::Welding)];
     CHECK_NEAR(W.electricity_kwh, fillet_kg * y.util_welding.fcaw_kwh_per_kg + saw_kg * y.util_welding.saw_kwh_per_kg, 1e-9);
     CHECK_NEAR(W.co2_nm3, fillet_kg * y.util_welding.fcaw_co2_nm3_per_kg, 1e-9);
     const auto& P = r.by_stage[static_cast<int>(Stage::Painting)];
-    CHECK_NEAR(P.paint_l, q.paint_area * y.takeoff.coats * y.util_painting.paint_l_per_m2_coat, 1e-9);
+    CHECK_NEAR(P.paint_l, q.paint_area * y.util_painting.coats * y.util_painting.paint_l_per_m2_coat, 1e-9);
     const auto& C = r.by_stage[static_cast<int>(Stage::Cutting)];
     CHECK_NEAR(C.electricity_kwh, q.cut_length * y.util_cutting.plasma_kwh_per_m, 1e-9);
     const auto& H = r.by_stage[static_cast<int>(Stage::Handling)];
@@ -278,7 +280,7 @@ static void test_box_takeoff_and_utilities() {
     double sum = 0;
     for (int s = 0; s < kStageCount; ++s) sum += r.by_stage[s].electricity_kwh;
     CHECK_NEAR(r.total.electricity_kwh, sum, 1e-9);
-    CHECK_NEAR(r.weld_metal_kg, fillet_kg + saw_kg + q.erection_length * y.takeoff.erection_butt_deposit, 1e-9);
+    CHECK_NEAR(r.weld_metal_kg, fillet_kg + saw_kg + q.erection_length * y.util_welding.erection_butt_deposit, 1e-9);
 
     // Doubling a rate doubles exactly the consumption it drives.
     YardProfile y2 = y;
@@ -343,6 +345,8 @@ static void test_yard_profile() {
         try { set_yard_option(y, k, v); } catch (const std::invalid_argument&) { return true; }
         return false;
     };
+    set_yard_option(y, "takeoff.coats", "4");  // moved key, still accepted
+    CHECK(y.util_painting.coats == 4);
     CHECK(throws("transporter.colour", "red"));
     CHECK(throws("transporter.units", "2.5"));
     CHECK(throws("painting.enabled", "maybe"));
@@ -439,20 +443,21 @@ static void test_tanker_division() {
     CHECK(ur.total.electricity_kwh > 0 && ur.total.air_nm3 > 0 && ur.total.water_m3 > 0);
 
     // Schedule: every unit of every utility lands on exactly one day (conservation).
-    ScheduleResult sr = schedule_utilities(d, ur, y);
+    ProductionSchedule ps = schedule_blocks(d, y);
+    DailyUtilityProfile sr = daily_utilities(ps, ur, y.capacity);
     for (auto& it : utility_items()) {
         double sum = 0;
-        for (auto& day : sr.daily_total) sum += day.*(it.member);
+        for (auto& day : sr.total) sum += day.*(it.member);
         CHECK_NEAR(sum, ur.total.*(it.member), 1e-9 * std::max(1.0, ur.total.*(it.member)));
     }
     // Erection starts in the key ring with a bottom block; stages follow each other before erection.
     const BlockSchedule* first = nullptr;
-    for (auto& b : sr.blocks) if (b.erection_order == 1) first = &b;
+    for (auto& b : ps.blocks) if (b.erection_order == 1) first = &b;
     CHECK(first && first->erection_wd == 0);
     CHECK(first && d.butts[first->ring - 1] <= 0.35 * p.Lpp && 0.35 * p.Lpp < d.butts[first->ring]);
     CHECK(first && (first->zone.rfind("DB", 0) == 0 || first->zone.rfind("LOW", 0) == 0));
-    for (size_t i = 0; i < sr.blocks.size(); ++i) {
-        const auto& b = sr.blocks[i];
+    for (size_t i = 0; i < ps.blocks.size(); ++i) {
+        const auto& b = ps.blocks[i];
         auto sp = [&](Stage s) { return b.span[static_cast<int>(s)]; };
         CHECK(sp(Stage::Cutting).end == sp(Stage::Heating).start);
         CHECK(sp(Stage::Heating).end == sp(Stage::Welding).start);
@@ -464,13 +469,13 @@ static void test_tanker_division() {
     // Peaks: the daily maximum, converted to an hourly rate; capacity utilisation and overrun days.
     const PeakInfo& e = sr.peaks[0];
     double mx = 0;
-    for (auto& day : sr.daily_total) mx = std::max(mx, day.electricity_kwh);
+    for (auto& day : sr.total) mx = std::max(mx, day.electricity_kwh);
     CHECK_NEAR(e.daily_peak, mx, 1e-9);
     CHECK_NEAR(e.peak_rate, mx / y.capacity.hours_per_day * y.capacity.peak_factor, 1e-9);
     YardProfile yc = y;
     yc.capacity.electricity_kw = e.peak_rate / 2;
     yc.capacity.base_electricity_kw = 100;
-    ScheduleResult sc = schedule_utilities(d, ur, yc);
+    DailyUtilityProfile sc = daily_utilities(schedule_blocks(d, yc), ur, yc.capacity);
     CHECK(sc.peaks[0].days_over > 0);
     CHECK_NEAR(sc.peaks[0].daily_peak, mx + 100 * y.capacity.hours_per_day, 1e-6);  // base load on every day
     double shares = 0;

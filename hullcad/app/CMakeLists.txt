@@ -11,7 +11,7 @@ qt_add_executable(hullcad_app WIN32 MACOSX_BUNDLE
   pipeline.cpp pipeline.h
 )
 set_target_properties(hullcad_app PROPERTIES OUTPUT_NAME hullcad)
-target_link_libraries(hullcad_app PRIVATE hullcad_core Qt6::Widgets Qt6::Svg Qt6::SvgWidgets Qt6::Concurrent)
+target_link_libraries(hullcad_app PRIVATE hullcad Qt6::Widgets Qt6::Svg Qt6::SvgWidgets Qt6::Concurrent)
 if(WIN32)
   target_compile_definitions(hullcad_app PRIVATE NOMINMAX UNICODE _UNICODE)
 endif()

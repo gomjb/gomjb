@@ -4,7 +4,7 @@
 #include <QMap>
 #include <QWidget>
 
-#include "hullcad/yard.hpp"
+#include "hullcad/project/yard_profile.hpp"
 
 class QGroupBox;
 

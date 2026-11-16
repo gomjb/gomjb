@@ -50,15 +50,15 @@ void DailyPlot::clear() {
     update();
 }
 
-void DailyPlot::setData(const ScheduleResult& s, int item, double capacity_per_day, const QString& unit) {
+void DailyPlot::setData(const DailyUtilityProfile& s, int item, double capacity_per_day, const QString& unit) {
     const auto& it = utility_items().at(item);
     days_.assign(s.days(), {});
     dates_.clear();
     ymax_ = capacity_per_day;
     for (int k = 0; k < s.days(); ++k) {
         double sum = 0;
-        for (int st = 0; st < kStageCount; ++st) sum += days_[k][st] = s.daily_by_stage[k][st].*(it.member);
-        sum += days_[k][kStageCount] = s.daily_base[k].*(it.member);
+        for (int st = 0; st < kStageCount; ++st) sum += days_[k][st] = s.by_stage[k][st].*(it.member);
+        sum += days_[k][kStageCount] = s.base[k].*(it.member);
         ymax_ = std::max(ymax_, sum);
         dates_ << QString::fromStdString(s.calendar.date(s.first_wd + k));
     }

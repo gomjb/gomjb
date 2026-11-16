@@ -317,7 +317,8 @@ QWidget* MainWindow::buildUtilityTab() {
 }
 
 void MainWindow::showSchedule(const DivisionRun& d) {
-    const ScheduleResult& s = d.schedule;
+    const ProductionSchedule& s = d.schedule;  // planning
+    const DailyUtilityProfile& p = d.daily;    // production
     peaksTable_->setRowCount(0);
     scheduleTable_->setSortingEnabled(false);
     scheduleTable_->setRowCount(0);
@@ -331,22 +332,21 @@ void MainWindow::showSchedule(const DivisionRun& d) {
         dailyPlot_->clear();
         return;
     }
-    int last_erection = 0;
-    for (auto& b : s.blocks) last_erection = std::max(last_erection, b.erection_wd);
+    const int last_erection = s.last_erection_wd;
     int over = 0;
-    for (auto& pk : s.peaks) over += pk.capacity > 0 && pk.days_over > 0;
+    for (auto& pk : p.peaks) over += pk.capacity > 0 && pk.days_over > 0;
     scheduleSummary_->setText(
         tr("첫 절단 %1 · 탑재 %2 ~ %3 (블록 %4개, 하루 %5개) · 탱크 시험 %6 ~ %7 · 작업일 %8일 · 시간당 환산: %9시간/일 × 동시계수 %10%11")
-            .arg(QString::fromStdString(s.calendar.date(s.first_wd)), QString::fromStdString(s.calendar.date(0)),
+            .arg(QString::fromStdString(s.calendar.date(p.first_wd)), QString::fromStdString(s.calendar.date(0)),
                  QString::fromStdString(s.calendar.date(last_erection)))
             .arg(s.blocks.size()).arg(d.yard.schedule.erection_blocks_per_day)
             .arg(QString::fromStdString(s.calendar.date(s.testing.start)), QString::fromStdString(s.calendar.date(s.testing.end - 1)))
-            .arg(s.days()).arg(d.yard.capacity.hours_per_day).arg(d.yard.capacity.peak_factor)
+            .arg(p.days()).arg(d.yard.capacity.hours_per_day).arg(d.yard.capacity.peak_factor)
             .arg(over ? tr(" — <span style='color:#b00020'><b>공급 능력 초과 %1건</b></span>").arg(over) : QString()));
 
-    peaksTable_->setRowCount(static_cast<int>(s.peaks.size()));
-    for (int i = 0; i < static_cast<int>(s.peaks.size()); ++i) {
-        const PeakInfo& pk = s.peaks[i];
+    peaksTable_->setRowCount(static_cast<int>(p.peaks.size()));
+    for (int i = 0; i < static_cast<int>(p.peaks.size()); ++i) {
+        const PeakInfo& pk = p.peaks[i];
         const QString unit = QString::fromUtf8(utility_items()[i].unit);
         const QString ru = QString::fromStdString(pk.rate_unit);
         peaksTable_->setItem(i, 0, text(QStringLiteral("%1 (%2)").arg(QString::fromUtf8(pk.label.c_str()), unit)));
@@ -392,9 +392,9 @@ void MainWindow::showSchedule(const DivisionRun& d) {
 }
 
 void MainWindow::showDailyPlot() {
-    const ScheduleResult& s = division_.schedule;
+    const DailyUtilityProfile& s = division_.daily;
     const int item = dailyItem_->currentIndex();
-    if (s.blocks.empty() || item < 0 || item >= static_cast<int>(s.peaks.size())) {
+    if (s.total.empty() || item < 0 || item >= static_cast<int>(s.peaks.size())) {
         dailyPlot_->clear();
         return;
     }
@@ -467,7 +467,7 @@ void MainWindow::buildMenus() {
         const QString dir = QFileDialog::getExistingDirectory(this, tr("저장할 폴더"));
         if (dir.isEmpty()) return;
         try {
-            write_daily_utilities_csv(division_.schedule, QDir::toNativeSeparators(QDir(dir).filePath(QStringLiteral("daily_utilities.csv"))).toStdString());
+            write_daily_utilities_csv(division_.daily, QDir::toNativeSeparators(QDir(dir).filePath(QStringLiteral("daily_utilities.csv"))).toStdString());
             write_block_schedule_csv(division_.schedule, QDir::toNativeSeparators(QDir(dir).filePath(QStringLiteral("block_schedule.csv"))).toStdString());
             statusBar()->showMessage(tr("저장됨: %1").arg(dir));
         } catch (const std::exception& e) {

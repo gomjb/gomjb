@@ -6,14 +6,14 @@
 #include <array>
 #include <vector>
 
-#include "hullcad/schedule.hpp"
+#include "hullcad/production/daily_load.hpp"
 
 class DailyPlot : public QWidget {
     Q_OBJECT
 public:
     explicit DailyPlot(QWidget* parent = nullptr);
     // item: index into hullcad::utility_items(); capacity_per_day: 0 = none.
-    void setData(const hullcad::ScheduleResult& s, int item, double capacity_per_day, const QString& unit);
+    void setData(const hullcad::DailyUtilityProfile& s, int item, double capacity_per_day, const QString& unit);
     void clear();
 
 protected:

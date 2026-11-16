@@ -3,7 +3,7 @@
 #include <QWidget>
 #include <vector>
 
-#include "hullcad/hydrostatics.hpp"
+#include "hullcad/naval/hydrostatics.hpp"
 
 class GzPlot : public QWidget {
     Q_OBJECT

@@ -4,9 +4,9 @@
 #include <chrono>
 #include <exception>
 
-#include "hullcad/compute_backend.hpp"
-#include "hullcad/lines_plan.hpp"
-#include "hullcad/parallel.hpp"
+#include "hullcad/naval/compute_backend.hpp"
+#include "hullcad/cad/lines_plan.hpp"
+#include "hullcad/core/parallel.hpp"
 
 namespace hullcad::app {
 
@@ -86,7 +86,8 @@ DivisionRun run_division(const HullRun& hull, const YardProfile& yard, const std
         if (!r.division.blocks.empty()) {
             r.utilities = estimate_utilities(r.division, hull.tanks, yard);
             try {
-                r.schedule = schedule_utilities(r.division, r.utilities, yard);
+                r.schedule = schedule_blocks(r.division, yard);
+                r.daily = daily_utilities(r.schedule, r.utilities, yard.capacity);
             } catch (const std::exception& e) {
                 r.schedule_error = e.what();
             }
