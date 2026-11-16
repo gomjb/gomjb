@@ -17,6 +17,15 @@ hullcad 데스크톱 앱(`hullcad.exe`)을 Windows x64 PC와 ARM64 PC(Snapdragon
 
 x64 PC에서 ARM64용을 크로스 빌드할 때는 x64 키트도 함께 설치해야 합니다. moc 같은 Qt 도구를 x64 키트에서 가져오기 때문입니다.
 
+Qt 계정 없이 명령줄로 설치하려면 [aqtinstall](https://github.com/miurahr/aqtinstall)을 씁니다(키트 하나 약 1 GB, 1분 안팎).
+
+```powershell
+python -m pip install aqtinstall
+python -m aqt install-qt windows desktop 6.8.3 win64_msvc2022_64 --outputdir C:\Qt
+python -m aqt install-qt windows desktop 6.8.3 win64_msvc2022_arm64_cross_compiled --outputdir C:\Qt   # ARM64 크로스 빌드용
+[Environment]::SetEnvironmentVariable('QT_DIR_X64', 'C:\Qt\6.8.3\msvc2022_64', 'User')                   # 프리셋이 읽는 경로 (새 터미널부터 적용)
+```
+
 ## 2. 한 번에 빌드하기 (권장)
 
 PowerShell을 열고 `hullcad` 폴더에서 실행합니다.
@@ -89,9 +98,7 @@ C:\Qt\6.8.3\msvc2022_64\bin\windeployqt.exe --release --qtpaths C:\Qt\6.8.3\msvc
 
 | 항목 | 검증 방법 | 결과 |
 |---|---|---|
-| 코어 라이브러리, 테스트, CLI (Windows x64) | clang(mingw)로 크로스 빌드하고 Wine에서 실행 | 테스트 851개 통과 |
-| 코어 라이브러리, 테스트, CLI (Windows ARM64) | 같은 방식으로 크로스 빌드 | 빌드만 확인 (ARM64는 실행하지 못함) |
-| Qt 앱 | Linux에서 Qt 6.8.3으로 빌드하고 실행, 세 탭 화면 확인 | 확인 |
-| MSVC 빌드 (VS 2022) | 이 개발 환경에는 MSVC가 없어 아직 실행하지 못함 | 미검증 |
-
-MSVC로 처음 빌드할 때 오류나 경고가 나오면 그 출력을 그대로 보내 주세요.
+| Windows x64 네이티브 빌드 | Windows 11 x64 PC, VS 2022 (MSVC 19.44), CMake 4.2, Qt 6.8.3, `cmake --preset windows-x64` | 오류·경고 0, 테스트 1881개 통과, 데모 실행 |
+| Qt 앱 (Windows x64) | 위 빌드의 `hullcad.exe` 실행, 모든 탭 화면 확인 | 확인 |
+| 배포본 (Windows x64) | `cmake --install`(windeployqt)로 만든 `dist\windows-x64`를 Qt가 PATH에 없는 상태에서 실행 | 확인 |
+| 코어 라이브러리, 테스트, CLI (Windows ARM64) | Linux에서 clang(mingw)로 크로스 빌드 | 빌드만 확인 (ARM64는 실행하지 못함) |

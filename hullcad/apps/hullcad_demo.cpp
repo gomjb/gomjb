@@ -64,7 +64,7 @@ int main(int argc, char** argv) {
     int threads = 0;
     bool run_bench = true;
     YardProfile yard;
-    bool bilge_g2 = false, fair_surface = false, raw_surface = false;
+    bool bilge_g1 = false, fair_surface = false, raw_surface = false;
     int network = -1;  // -1: default (on for imported tables), 0 off, 1 on
     std::string offsets_file, export_offsets_file;
     double offset_accuracy_mm = 1.0, offset_noise_mm = 0.0, station_error_mm = 0.0;
@@ -89,7 +89,7 @@ int main(int argc, char** argv) {
             else if (a == "--bilge" && i + 1 < argc) {
                 std::string b = argv[++i];
                 if (b != "g1" && b != "g2") throw std::invalid_argument("--bilge expects g1 or g2");
-                bilge_g2 = b == "g2";
+                bilge_g1 = b == "g1";
             } else if (a == "--fair-surface") fair_surface = true;
             else if (a == "--network") network = 1;
             else if (a == "--no-network") network = 0;
@@ -127,7 +127,7 @@ int main(int argc, char** argv) {
                     "usage: hullcad_demo [--out DIR] [--threads N] [--no-bench]\n"
                     "                    [--yard FILE.ini] [--set section.key=value]... [--write-yard FILE.ini]\n"
                     "                    [--butts FR,FR,...] [--sweep section.key=v1,v2,...]\n"
-                    "                    [--bilge g1|g2] [--fair-surface] [--fair-tolerance MM] [--network|--no-network] [--network-tolerance MM]\n"
+                    "                    [--bilge g2|g1] [--fair-surface] [--fair-tolerance MM] [--network|--no-network] [--network-tolerance MM]\n"
                     "                    [--offsets FILE.csv [--offset-accuracy MM] [--raw-surface]]\n"
                     "                    [--export-offsets FILE.csv [--offset-points N] [--offset-noise MM] [--station-error MM]]\n");
                 return 2;
@@ -140,7 +140,7 @@ int main(int argc, char** argv) {
     std::filesystem::create_directories(outdir);
 
     TankerParams p;
-    if (bilge_g2) p.n_mid = 4.0;
+    if (bilge_g1) p.n_mid = 2.0;  // circular bilge (default: curvature-continuous)
 
     if (!export_offsets_file.empty()) {
         // Offset table of the parametric hull, rounded to the millimetre like a printed table.

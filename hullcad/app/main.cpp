@@ -18,7 +18,7 @@ int main(int argc, char** argv) {
     QCommandLineOption shots(QStringLiteral("screenshot"),
                              QStringLiteral("Save a PNG of every tab to <dir> after the first calculation, then quit."),
                              QStringLiteral("dir"));
-    QCommandLineOption bilge(QStringLiteral("bilge"), QStringLiteral("Midship bilge: g1 (circular) or g2 (curvature-continuous)."),
+    QCommandLineOption bilge(QStringLiteral("bilge"), QStringLiteral("Midship bilge: g2 (curvature-continuous, default) or g1 (circular)."),
                              QStringLiteral("g1|g2"));
     cli.addOption(bilge);
     QCommandLineOption offsets(QStringLiteral("offsets"), QStringLiteral("Build the hull from an offset table (.csv)."),

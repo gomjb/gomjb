@@ -136,7 +136,7 @@ int MainWindow::threads() const { return std::max(1, QThread::idealThreadCount()
 
 void MainWindow::start() { runHull(); }
 
-void MainWindow::setBilgeG2(bool g2) { bilgeCombo_->setCurrentIndex(g2 ? 1 : 0); }
+void MainWindow::setBilgeG2(bool g2) { bilgeCombo_->setCurrentIndex(bilgeCombo_->findData(g2 ? 4.0 : 2.0)); }
 
 void MainWindow::setNetworkFairing(bool on) {
     if (on) fairSurfaceCheck_->setChecked(true);
@@ -192,8 +192,8 @@ QWidget* MainWindow::buildHullTab() {
     auto* fbox = new QGroupBox(tr("빌지 형상 · 단면 순정"));
     auto* fform = new QFormLayout(fbox);
     bilgeCombo_ = new QComboBox;
-    bilgeCombo_->addItem(tr("원호 빌지 (G1: 곡률이 0 → 1/R로 점프)"));
-    bilgeCombo_->addItem(tr("곡률 연속 빌지 (G2: n = 4, 같은 단면적)"));
+    bilgeCombo_->addItem(tr("곡률 연속 빌지 (G2: n = 4, 같은 단면적)"), 4.0);  // item data: n_mid
+    bilgeCombo_->addItem(tr("원호 빌지 (G1: 곡률이 0 → 1/R로 점프)"), 2.0);
     bilgeCombo_->setToolTip(tr("곡률 연속 빌지는 평저·평측과 만나는 곳에서 곡률이 0부터 서서히 커집니다.\n"
                                "원호 빌지와 같은 단면적을 빼도록 크기를 맞춥니다."));
     fform->addRow(tr("빌지"), bilgeCombo_);
@@ -716,7 +716,7 @@ void MainWindow::buildMenus() {
 TankerParams MainWindow::hullParams() const {
     TankerParams p;
     for (int i = 0; i < hullSpins_.size(); ++i) p.*(kHullFields[i].member) = hullSpins_[i]->value();
-    p.n_mid = bilgeCombo_->currentIndex() == 1 ? 4.0 : 2.0;
+    p.n_mid = bilgeCombo_->currentData().toDouble();
     return p;
 }
 

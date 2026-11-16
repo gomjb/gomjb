@@ -2,7 +2,8 @@
 // Simplified parametric hull for a ~120k DWT crude oil tanker (Aframax / LR2 class).
 //
 // Each station is a "rounded-box" section: flat bottom, a super-ellipse bilge corner and a
-// vertical side. Midship the corner is an exact circle (n = 2, ry = rz = bilge radius); toward
+// vertical side. Midship the corner is a curvature-continuous super-ellipse (n = 4) removing the
+// same section area as a circular bilge of bilge_radius (n_mid = 2 gives that circle); toward
 // the ends the corner grows until it spans the whole section, giving V-sections aft and
 // U-sections forward. Bulbous bow, stern skeg/boss and above-water flare are NOT modelled yet.
 //
@@ -34,9 +35,9 @@ struct TankerParams {
     double xi_cutup_end = 0.09;
     double forefoot_rise = 2.5;                // m, keel rise at FP
 
-    double n_mid = 2.0;    // bilge corner exponent in the parallel middle body: 2 = circular bilge
-                           // (curvature jumps 0 -> 1/R at the flat of bottom/side, G1);
-                           // > 2 starts and ends with zero curvature (G2 with the flats)
+    double n_mid = 4.0;    // bilge corner exponent in the parallel middle body: > 2 starts and
+                           // ends with zero curvature (G2 with the flat of bottom/side);
+                           // 2 = circular bilge (curvature jumps 0 -> 1/R there, G1)
     double n_aft = 1.55;   // super-ellipse exponent at AP (smaller = more V-shaped)
     double n_fwd = 2.6;    // super-ellipse exponent at FP (larger = fuller U)
 

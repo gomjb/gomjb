@@ -203,8 +203,9 @@ static void test_box_block_weights() {
     double end_total = 0;
     for (int z = wm.n_cargo_zones; z < wm.nzone; ++z) end_total += wm.zone_mass(z, 0, p.Lpp).w;
     CHECK_NEAR(end_total, p.Lpp * per_m + bhd, 1e-6);
-    // Bottom shell of DB-P: y from the CL seam (0.3) to the side seam (min(B/2-2, B/2-R) - 0.3).
-    const double a = std::min(p.B / 2 - 2.0, p.B / 2 - p.bilge_radius) - 0.3;
+    // Bottom shell of DB-P: y from the CL seam (0.3) to the side seam at the bilge start
+    // (min(B/2 - 2, B/2 - bilge corner) - 0.3).
+    const double a = std::min(p.B / 2 - 2.0, p.B / 2 - bilge_corner_size(p)) - 0.3;
     CHECK(wm.zones[1].name == "DB-P");
     CHECK_NEAR(wm.zone_mass(1, 10, 20).w, (a - 0.3) * mpa(st.bottom_shell) * 10, 1e-6);
 
@@ -241,13 +242,14 @@ static void test_box_takeoff_and_utilities() {
     ThreadPool pool(4);
     WeightModel wm = build_weight_model(box, p, st, default_cargo_zones(p, st, y), default_end_zones(p, y), 0.25, pool);
 
-    // DB-P block, x in [10, 20): bottom shell from the CL seam (0.3) to the side seam (7.3).
-    const double girth = 7.0, L = 10.0, sp = st.stiffener_spacing;
+    // DB-P block, x in [10, 20): bottom shell from the CL seam (0.3) to the side seam at the
+    // bilge start (B/2 - bilge corner - 0.3 = 5.59 m with the default curvature-continuous bilge).
+    const double girth = p.B / 2 - bilge_corner_size(p) - 0.6, L = 10.0, sp = st.stiffener_spacing;
     QuantityTakeoff q = takeoff_block(wm, 1, 10, 20, true, st, y);
     CHECK_NEAR(q.plate_area, girth * L, 1e-9);
     CHECK_NEAR(q.stiffener_length, girth / sp * L, 1e-9);
     CHECK_NEAR(q.fillet_length, 2 * girth / sp * L, 1e-9);           // no plate joints in this zone
-    CHECK_NEAR(q.shop_butt_length, 1 * L, 1e-9);                     // ceil(7 / 4.5) - 1 = 1 seam, no butt
+    CHECK_NEAR(q.shop_butt_length, 1 * L, 1e-9);                     // ceil(5.29 / 4.5) - 1 = 1 seam, no butt
     CHECK_NEAR(q.erection_length, L + girth, 1e-9);                  // seam to SIDE-P + aft butt
     CHECK_NEAR(q.paint_area, 2 * girth * L + girth / sp * L * y.takeoff.stiffener_paint_girth, 1e-9);
     CHECK_NEAR(q.cut_length, girth * L * 2 * (21.0 + 4.5) / (21.0 * 4.5), 1e-9);
@@ -337,6 +339,7 @@ static void test_fairing() {
     // 2. A 49-point midship offset table (flat + circular bilge + flat side) with +-1 mm noise:
     //    straight runs found on their least-squares lines, bilge faired, no inflections.
     TankerParams p;
+    p.n_mid = 2.0;  // circular bilge (G1); the default curvature-continuous one is case 4
     const double x = 119.5;
     auto table = section_points(section_at(p, x), x, p.D, 49);
     auto table_noisy = with_noise(table, 0.001, 99);
@@ -363,8 +366,8 @@ static void test_fairing() {
     CHECK_NEAR(g1.lead_b.z, 0.0, 1e-4);  // flat within 0.1 mm
 
     // 4. Curvature-continuous bilge (n_mid = 4), G2: curvature rises from zero, no inflections.
-    TankerParams p4;
-    p4.n_mid = 4.0;
+    const TankerParams p4;  // default: curvature-continuous bilge, n_mid = 4
+    CHECK_NEAR(p4.n_mid, 4.0, 0.0);
     FairingOptions g2o = so;
     g2o.junction_continuity = 2;
     g2o.offset_accuracy = 0;  // exact offsets
@@ -451,14 +454,16 @@ static void test_network_fairing() {
     HullFairing h = fair_offset_table(t, o, p.points_per_section);
     const HullFairing before = h;
 
-    // Flatness of the midship bottom of the faired surface (slices at x = 100, 120, 140 m).
+    // Flatness of the midship bottom of the faired surface (slices at x = 100, 120, 140 m, up to
+    // 0.5 m inboard of the bilge start).
+    const double fob = p.B / 2 - bilge_corner_size(p) - 0.5;
     auto bottom_range = [&](const HullFairing& f) {
         const TriMesh msh = tessellate_hull(build_faired_hull_surface(f, p), 240, 80);
         double lo = 1e9, hi = -1e9;
         for (double xx : {100.0, 120.0, 140.0})
             for (auto& g : slice(msh, 0, xx))
                 for (auto& pt : {g.first, g.second})
-                    if (pt.y > 0.3 && pt.y < 19.0 && pt.z < 1) { lo = std::min(lo, pt.z); hi = std::max(hi, pt.z); }
+                    if (pt.y > 0.3 && pt.y < fob && pt.z < 1) { lo = std::min(lo, pt.z); hi = std::max(hi, pt.z); }
         return hi - lo;
     };
     const int stripes0 = surface_curvature_map(build_faired_hull_surface(h, p)).long_sign_changes();
@@ -545,8 +550,10 @@ static void test_offset_tables() {
         return false;
     };
 
-    // Round trip of a parametric table.
+    // Round trip of a parametric table. Circular bilge: like most measured tables of real tankers
+    // (the interpolated raw table then rings about 1.5 cm where the bilge meets the flat).
     TankerParams p;
+    p.n_mid = 2.0;
     OffsetTable t = parametric_offset_table(p, 25);
     const auto rt = (dir / "hullcad_offsets_rt.csv").string();
     write_offsets_csv(t, rt);
@@ -599,13 +606,15 @@ static void test_offset_tables() {
     const TriMesh faired = tessellate_hull(build_faired_hull_surface(hf, p), 240, 80);
     be->upload(faired);
     CHECK(std::fabs(hydrostatic_table(*be, ref, {p.T})[0].volume / v0 - 1.0) < 5e-4);
-    // Midship bottom: the faired surface is flat within 1 cm (flat-block criterion), the raw one is not.
+    // Midship bottom (up to 0.5 m inboard of the bilge start): the faired surface is flat within
+    // 1 cm (flat-block criterion), the raw one is not.
+    const double fob = p.B / 2 - bilge_corner_size(p) - 0.5;
     auto bottom_range = [&](const TriMesh& msh) {
         double lo = 1e9, hi = -1e9;
         for (double xx : {100.0, 120.0, 140.0})
             for (auto& g : slice(msh, 0, xx))
                 for (auto& pt : {g.first, g.second})
-                    if (pt.y > 0.3 && pt.y < 19.0 && pt.z < 1) { lo = std::min(lo, pt.z); hi = std::max(hi, pt.z); }
+                    if (pt.y > 0.3 && pt.y < fob && pt.z < 1) { lo = std::min(lo, pt.z); hi = std::max(hi, pt.z); }
         return hi - lo;
     };
     // Raw: about 15 mm (beyond the 1 cm flat-block test); faired (97 points per section): below
