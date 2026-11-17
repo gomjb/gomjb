@@ -1,0 +1,118 @@
+#include "pipeline.h"
+
+#include <algorithm>
+#include <chrono>
+#include <exception>
+
+#include "hullcad/naval/compute_backend.hpp"
+#include "hullcad/cad/lines_plan.hpp"
+#include "hullcad/core/parallel.hpp"
+
+namespace hullcad::app {
+
+namespace {
+
+double seconds_since(std::chrono::steady_clock::time_point t0) {
+    return std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+}
+
+ShipRef ship_ref(const TankerParams& p) { return {p.Lpp, p.B, 0.5 * p.Lpp, 1.025}; }
+
+std::vector<double> gz_heels() {
+    std::vector<double> h;
+    for (double a = 0; a <= 70.0 + 1e-9; a += 2.5) h.push_back(a);
+    return h;
+}
+
+}  // namespace
+
+HullRun run_hull(const TankerParams& p_in, double KG, int threads, const FairingOptions& fairing, bool faired_surface,
+                 std::shared_ptr<const OffsetTable> table, double network_tolerance) {
+    HullRun r;
+    TankerParams p = table ? params_for_table(*table, p_in) : p_in;
+    r.params = p;
+    r.KG = KG;
+    r.faired_surface = faired_surface;
+    r.offsets = table;
+    const auto t0 = std::chrono::steady_clock::now();
+    try {
+        r.fairing = table ? fair_offset_table(*table, fairing, p.points_per_section) : fair_hull_sections(p, fairing);
+        NetworkOptions no = default_network(p);
+        no.tolerance = std::max(network_tolerance, 1e-4);
+        no.offset_accuracy = fairing.offset_accuracy;
+        no.fair_girth_lines = network_tolerance > 0 && faired_surface;
+        if (no.fair_girth_lines)
+            r.stripes_before_network = surface_curvature_map(build_faired_hull_surface(r.fairing, p)).long_sign_changes();
+        r.network = fair_network(r.fairing, no);
+        r.network_faired = r.network.girth_lines > 0;
+        r.network_tolerance = no.tolerance;
+        BSplineSurface S = faired_surface ? build_faired_hull_surface(r.fairing, p) : build_offset_surface(r.fairing);
+        r.curvature = surface_curvature_map(S);
+        r.mesh = tessellate_hull(S, 240, 80);
+        auto be = make_cpu_backend(threads);
+        be->upload(r.mesh);
+        const ShipRef ref = ship_ref(p);
+        r.design = hydrostatic_table(*be, ref, {p.T})[0];
+        std::vector<double> drafts;
+        for (double T = 1.0; T <= p.D - 1.0 + 1e-9; T += 0.5) drafts.push_back(T);
+        r.table = hydrostatic_table(*be, ref, drafts);
+        r.gz = gz_curve(*be, ref, r.design.volume, Vec3{r.design.B.x, 0.0, KG}, gz_heels());
+
+        LinesPlanSpec spec{p.Lpp, p.B, p.D, p.T, {}, {}, {}};
+        for (int i = 0; i <= 20; ++i) spec.stations.push_back(std::clamp(p.Lpp * i / 20.0, 0.05, p.Lpp - 0.05));
+        for (double z = 1.0; z < p.D - 0.5; z += 2.0) spec.waterlines.push_back(z);
+        for (double y = 4.0; y < 0.5 * p.B; y += 4.0) spec.buttocks.push_back(y);
+        r.lines_svg = lines_plan_svg(r.mesh, spec);
+        r.tanks = tank_volumes(r.mesh, p, default_tanker_structure(p));
+    } catch (const std::exception& e) {
+        r.error = e.what();
+    }
+    r.seconds = seconds_since(t0);
+    return r;
+}
+
+std::vector<GZPoint> run_gz(const HullRun& hull, double KG, int threads) {
+    auto be = make_cpu_backend(threads);
+    be->upload(hull.mesh);
+    return gz_curve(*be, ship_ref(hull.params), hull.design.volume, Vec3{hull.design.B.x, 0.0, KG}, gz_heels());
+}
+
+DivisionRun run_division(const HullRun& hull, const YardProfile& yard, const std::vector<double>& manual_frames,
+                         int threads) {
+    DivisionRun r;
+    r.manual = !manual_frames.empty();
+    const auto t0 = std::chrono::steady_clock::now();
+    try {
+        const TankerParams& p = hull.params;
+        TankerStructure st = default_tanker_structure(p);
+        ThreadPool pool(threads);
+        WeightModel wm = build_weight_model(hull.mesh, p, st, default_cargo_zones(p, st, yard),
+                                            default_end_zones(p, yard), 0.25, pool);
+        r.steel_total = wm.ring_mass(0.0, p.Lpp);
+        if (r.manual) {
+            std::vector<double> xs;
+            for (double f : manual_frames) xs.push_back(st.frames.x(f));
+            r.division = evaluate_division(wm, p, st, xs, yard);
+        } else {
+            r.division = auto_divide(wm, p, st, yard);
+        }
+        r.summary = summarize_checks(r.division);
+        r.yard = yard;
+        if (!r.division.blocks.empty()) {
+            r.utilities = estimate_utilities(r.division, hull.tanks, yard);
+            try {
+                r.schedule = schedule_blocks(r.division, yard);
+                r.daily = daily_utilities(r.schedule, r.utilities, yard.capacity);
+            } catch (const std::exception& e) {
+                r.schedule_error = e.what();
+            }
+        }
+        if (!r.division.butts.empty()) r.svg = division_svg(r.division, hull.mesh, p, st, wm, yard);
+    } catch (const std::exception& e) {
+        r.error = e.what();
+    }
+    r.seconds = seconds_since(t0);
+    return r;
+}
+
+}  // namespace hullcad::app
