@@ -22,9 +22,12 @@ Physics Designer처럼 Isaac Sim의 `extsUser`에 **디렉터리 정션**으로 
 의존하므로 둘 다 연결합니다.
 
 ```bat
+:: 작업 폴더(저장소): 처음 한 번만 클론
+git clone -b claude/isaac-sim-python-designer-dv3wt3 https://github.com/gomjb/gomjb.git C:\ws\isaac-sim-design
+set REPO=C:\ws\isaac-sim-design
 set ISAAC=E:\isaac-sim-standalone-6.1.0-windows-x86_64
-mklink /J "%ISAAC%\extsUser\gomjb.physics_designer" "<repo>\exts\gomjb.physics_designer"
-mklink /J "%ISAAC%\extsUser\gomjb.kinematics" "<repo>\exts\gomjb.kinematics"
+mklink /J "%ISAAC%\extsUser\gomjb.physics_designer" "%REPO%\exts\gomjb.physics_designer"
+mklink /J "%ISAAC%\extsUser\gomjb.kinematics" "%REPO%\exts\gomjb.kinematics"
 ```
 
 `Window > Extensions` → **Kinematics** → *Enable*(Physics Designer도 함께 켜집니다), 메뉴 `Tools > Kinematics`로

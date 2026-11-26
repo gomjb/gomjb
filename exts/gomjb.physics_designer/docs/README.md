@@ -19,8 +19,11 @@ Isaac Sim은 설치 폴더의 `extsUser`를 모든 앱에서 확장 경로로 �
 (관리자 권한 불필요).
 
 ```bat
+:: 작업 폴더(저장소): 처음 한 번만 클론
+git clone -b claude/isaac-sim-python-designer-dv3wt3 https://github.com/gomjb/gomjb.git C:\ws\isaac-sim-design
+set REPO=C:\ws\isaac-sim-design
 set ISAAC=E:\isaac-sim-standalone-6.1.0-windows-x86_64
-mklink /J "%ISAAC%\extsUser\gomjb.physics_designer" "<repo>\exts\gomjb.physics_designer"
+mklink /J "%ISAAC%\extsUser\gomjb.physics_designer" "%REPO%\exts\gomjb.physics_designer"
 ```
 
 그다음 Isaac Sim에서 `Window > Extensions` → **Physics Designer** → *Enable* (원하면 *Autoload* 체크),
@@ -28,14 +31,14 @@ mklink /J "%ISAAC%\extsUser\gomjb.physics_designer" "<repo>\exts\gomjb.physics_d
 정션을 지우려면 `rmdir "%ISAAC%\extsUser\gomjb.physics_designer"` (링크만 지워지고 저장소는 그대로입니다).
 같은 확장을 `extsUser`에 복사본으로도 두면 같은 버전이 두 번 등록되니 복사본은 두지 마세요.
 
-**다른 방법**: `Window > Extensions` → ☰ → *Extension Search Paths* 에 `<repo>/exts` 추가, 또는
-`isaac-sim.bat --ext-folder <repo>\exts --enable gomjb.physics_designer`.
+**다른 방법**: `Window > Extensions` → ☰ → *Extension Search Paths* 에 `%REPO%\exts` 추가, 또는
+`isaac-sim.bat --ext-folder %REPO%\exts --enable gomjb.physics_designer`.
 
 검증 환경: **Isaac Sim 6.1.0 (Kit 110, Windows, RTX 5060 Ti)** — PhysX(기본 `isaac-sim.bat`)와
 Newton(`isaac-sim.newton.bat`) 양쪽에서 5개 템플릿을 시뮬레이션해 확인했습니다.
 물리 스키마는 USD 표준 `UsdPhysics`만 사용하고, 외부 패키지는 쓰지 않습니다. 정확해석기와 기구학 모드는
 별도 확장 Kinematics(`gomjb.kinematics`, 2.9)이며, 함께 쓰려면 같은 방법으로 연결합니다:
-`mklink /J "%ISAAC%\extsUser\gomjb.kinematics" "<repo>\exts\gomjb.kinematics"`.
+`mklink /J "%ISAAC%\extsUser\gomjb.kinematics" "%REPO%\exts\gomjb.kinematics"`.
 
 ---
 
@@ -409,5 +412,8 @@ set ISAAC=E:\isaac-sim-standalone-6.1.0-windows-x86_64
 * 드라이브 stiffness 단위는 PhysX 규약을 따릅니다(각도 드라이브는 deg 기준).
 * PhysX GPU 물리에서 **강체** 루프 닫힘을 가진 articulation(시저)과 다른 articulation을 한 씬에 두면 발산합니다
   (Isaac Sim 6.1 실측). 디자이너가 만드는 씬은 CPU 물리이고, 검증기가 GPU 씬에서 이를 경고·수정합니다.
-  루프 닫힘을 부싱으로 하면 이 경고는 나오지 않습니다. 다만 **부싱 루프의 GPU 안정성은 아직 Isaac Sim에서
-  실측하지 않았습니다.** Kit 테스트 `test_bushing_scissor_on_gpu_dynamics`가 이것을 확인합니다.
+  루프 닫힘을 부싱으로 하면 이 경고는 나오지 않습니다. 다만 **부싱 루프의 GPU 안정성은 아직 확인되지 않았습니다.**
+  Kit 테스트 `test_bushing_scissor_on_gpu_dynamics`가 이를 확인합니다. GPU 씬에서 부싱 시저를 액추에이터 모션으로
+  올리고, 텐서 API로 읽은 플랫폼 높이가 정확한 기구학 상승량의 1 cm 안인지 봅니다.
+  (0.10.0까지의 이 테스트는 위치를 USD에서 읽었습니다. 재생 중 상태는 Fabric/텐서에 있으므로 발산해도 통과할 수
+  있었고, 그 통과 기록은 근거가 되지 못합니다.)

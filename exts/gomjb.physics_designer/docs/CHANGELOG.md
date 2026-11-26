@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.10.1] - 2026-11-26
+### Fixed
+- `test_bushing_scissor_on_gpu_dynamics` read the platform from USD, which keeps the authored pose
+  while the simulated state lives in Fabric / tensors, so it could pass even if the GPU simulation
+  diverged. It now reads the platform through the tensor API (`RigidPrim.get_world_poses`), raises
+  the lift with an actuator motion and checks the exact kinematic rise within 1 cm.
+
+### Changed
+- READMEs: the work folder (repository clone) is `C:\ws\isaac-sim-design`; commands use `%REPO%`.
+
 ## [0.10.0] - 2026-11-12
 ### Changed
 - The exact solver and kinematic mechanisms moved to their own extension, **gomjb.kinematics**
