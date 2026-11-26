@@ -1,5 +1,5 @@
 [package]
-version = "0.1.1"
+version = "0.1.2"
 title = "Kinematics"
 description = "Kinematics tool for Isaac Sim on models made with the Physics Designer: an exact constraint-based multibody solver (Exudyn) - static equilibrium, drive sweeps, dynamic analysis, redundant constraints - and kinematic mechanisms that follow their joint motions in the simulation through a motion table or a co-simulation with the exact solver, one Warp kernel for any number of cloned copies."
 category = "Simulation"

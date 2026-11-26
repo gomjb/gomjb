@@ -78,7 +78,7 @@ def test_driven_revolute_torque_for_every_joint_axis(scene, base_rot, token):
     jt.create_joint_at(scene, spec, base, link, location="custom", custom_position=(0, 0, 0), world_axis="Y",
                        parent_path="/World/M/Joints")
     model = MbdModel(scene, "/World/M")
-    for target in (0.0, 50.0):
+    for target in (0.0, 50.0, 120.0, 170.0):  # past 90 deg Exudyn's Tait-Bryan output switches branch
         model.set_drive("Hinge", target)
         v = model.solve_static(steps=5)
         assert v["pos:Hinge"] == pytest.approx(target, abs=1e-6)
@@ -359,3 +359,59 @@ def test_exact_solver_follows_the_motion(stage):
     assert abs(rec.at(0.5, "pos:Hinge")) == pytest.approx(30.0, abs=0.2)  # STEP midpoint at t = 0.5
     torque = abs(rec.channels["force:Hinge"][-1])
     assert torque == pytest.approx(2.0 * 9.81 * 0.5 * math.cos(math.radians(60.0)), rel=1e-3)
+
+
+# -- redundant violation (RecurDyn's check: released equations must stay satisfied) -----------
+def _tilted_lift(scene, tilt_deg):
+    """Two-sided 3-stage lift with one loop pin's axis tilted: compatible at the built pose, its
+    released equations open up as soon as it moves."""
+    res = me.build_scissor_lift(scene, stages=3, sides=2, angle=30.0, loop_closure="rigid")
+    pin = UsdPhysics.Joint(scene.GetPrimAtPath(res["root"][0] + "/Joints/TopSliderPin_R"))
+    q = Gf.Quatd(pin.GetLocalRot0Attr().Get()) * Gf.Rotation(Gf.Vec3d(1, 0, 0), tilt_deg).GetQuat()
+    q = q.GetNormalized()
+    pin.GetLocalRot0Attr().Set(Gf.Quatf(q.GetReal(), Gf.Vec3f(q.GetImaginary())))
+    return res["root"][0]
+
+
+def _drive_to(model, deg):
+    for d in model.drive_names:
+        model.set_drive(d, me.scissor_slider_offset(1.2, 30.0, deg))
+
+
+def test_compatible_redundancy_stays_at_round_off(scene):
+    model = MbdModel(scene, _tilted_lift(scene, 0.0))
+    assert model.released
+    model.static_sweep(model.drive_names, [me.scissor_slider_offset(1.2, 30.0, a) for a in (35.0, 50.0, 65.0)])
+    lin, ang = model.max_violation
+    assert lin < 1e-12 and ang < 1e-9
+    assert "redundant violation (largest so far)" in model.report()
+
+
+def test_incompatible_redundancy_stops_the_static_analysis(scene):
+    from gomjb.kinematics.core.mbd import RedundantViolation
+
+    model = MbdModel(scene, _tilted_lift(scene, 0.1))
+    model.solve_static()  # the built pose: the tilted pin still meets the others
+    _drive_to(model, 45.0)
+    with pytest.raises(RedundantViolation, match=r"released equation \w+\.\w+ = .*tolerance 1e-06 m"):
+        model.solve_static(steps=5)
+    assert model.max_violation[0] > 1e-3  # the hidden gap is millimetres, not round-off
+
+
+def test_redundant_tolerance_is_the_users(scene):
+    model = MbdModel(scene, _tilted_lift(scene, 0.1), redundant_tolerance=(1.0, 90.0))
+    _drive_to(model, 45.0)
+    model.solve_static(steps=5)  # accepted, and the size of the gap is reported
+    assert model.max_violation[0] > 1e-3 and "redundant violation" in model.report()
+
+
+def test_incompatible_redundancy_stops_the_dynamic_analysis(scene):
+    from gomjb.kinematics.core.mbd import RedundantViolation
+
+    root = _tilted_lift(scene, 0.1)
+    for side in "LR":
+        mo.set_motion(scene.GetPrimAtPath(f"{root}/Joints/Actuator_{side}"),
+                      mo.Motion("displacement", "-0.2 * TIME"))
+    model = MbdModel(scene, root)
+    with pytest.raises(RedundantViolation, match=r"at t = "):
+        model.simulate(1.0, step=1e-3)

@@ -23,6 +23,11 @@ a prescribed motion ("motion" in RecurDyn) whose multiplier is the exact actuato
   numerically and releases one equation at a time — loop-closing joints first — keeping the
   mobility, like Adams / MotionSolve, and unlike Adams / Simscape reports what was released;
   ``"bushings"`` replaces undriven joints by stiff bushings so the split follows stiffness.
+* Redundant violation (RecurDyn's check of the same name): a released equation is no longer
+  enforced, so if the redundant constraints are incompatible (non-parallel pin axes, misaligned
+  joints) the gap hides in it while the solution looks valid. Every solved configuration (static,
+  sweep, position, every dynamic step) measures the released equations and raises
+  :class:`RedundantViolation` beyond ``redundant_tolerance`` (RecurDyn: error C0276).
 
 Inputs and outputs are SI (m, deg, N, N*m); the model itself runs in stage units.
 Channel names match :mod:`recording`: ``pos:<joint>`` / ``force:<joint>`` for driven and free
@@ -71,6 +76,13 @@ class MbdJoint:
 
 
 REDUNDANCY_MODES = ("release", "bushings")
+# released equations of a compatible model stay at round-off (1e-15 m); RecurDyn's default is 0.001
+REDUNDANT_TOLERANCE = (1.0e-6, 1.0e-3)  # m, deg
+
+
+class RedundantViolation(RuntimeError):
+    """A released redundant equation is violated beyond the tolerance: the redundant constraints are
+    incompatible, so the model cannot move as built (RecurDyn: C0276)."""
 
 
 class MbdModel:
@@ -85,10 +97,14 @@ class MbdModel:
 
     ``rigid_bushings``: joints the designer turned into bushings become the exact joints they
     replace (loop closures, released first when redundant) instead of spring-dampers.
+
+    ``redundant_tolerance`` = (m, deg): how far a released equation may drift before
+    :class:`RedundantViolation` stops the analysis; :attr:`max_violation` holds the largest seen.
     """
 
     def __init__(self, stage: Usd.Stage, root_path: str, redundancy: str = "release",
-                 bushing_stiffness: Tuple[float, float] = (1.0e8, 1.0e7), rigid_bushings: bool = False):
+                 bushing_stiffness: Tuple[float, float] = (1.0e8, 1.0e7), rigid_bushings: bool = False,
+                 redundant_tolerance: Tuple[float, float] = REDUNDANT_TOLERANCE):
         import exudyn as exu
         from exudyn.utilities import MarkerBodyRigid, ObjectGround, ObjectJointGeneric, RigidBodyInertia
 
@@ -105,6 +121,8 @@ class MbdModel:
                    bushing_stiffness[1] / self.si["torque"])
         self.notes: Dict[str, List[str]] = {}  # what the analysis leaves out -> the joints concerned
         self.released: List[Tuple[str, str]] = []
+        self.redundant_tolerance = (float(redundant_tolerance[0]), float(redundant_tolerance[1]))
+        self.max_violation = (0.0, 0.0)  # largest |released equation| seen: m, deg
         self.joints: Dict[str, MbdJoint] = {}
         self.bodies: Dict[str, int] = {}
 
@@ -334,9 +352,64 @@ class MbdModel:
             targets = ", ".join(f"{n} = {self.drive_value(n):.6g} {self.drive_unit(n)}" for n in self.drive_names)
             raise RuntimeError(f"static solution did not converge at {targets} (beyond the mechanism's range, "
                                "or a step too large for the continuation)")
+        self.check_redundant()
         current = mbs.systemData.GetODE2Coordinates(exu.ConfigurationType.Current)
         mbs.systemData.SetODE2Coordinates(current, exu.ConfigurationType.Initial)  # continuation
         self._last_target = {n: self.drive_value(n) for n in self.drive_names}
+
+    # -- redundant violation -------------------------------------------------------------
+    def redundant_violation(self) -> List[Tuple[str, str, float]]:
+        """(joint, axis, value) of every released equation at the current configuration: the
+        joint frame's relative displacement (m) or rotation (deg) along the released axis, which
+        an enforced equation would hold at zero."""
+        exu = self._exu
+        out = []
+        for name, axis in self.released:
+            mj = self.joints[name]
+            i = AXIS_NAMES.index(axis)
+            if i < 3:
+                d = self.mbs.GetObjectOutput(mj.index, exu.OutputVariableType.DisplacementLocal)
+                out.append((name, axis, float(d[i]) * self.si["length"]))
+            else:
+                out.append((name, axis, math.degrees(self._joint_rotation(mj)[i - 3])))
+        return out
+
+    def _joint_rotation(self, mj: MbdJoint) -> np.ndarray:
+        """Relative rotation of a joint as XYZ Tait-Bryan angles (rad), the branch that keeps its
+        locked axes smallest. Exudyn reports one of the two equivalent triples, (a, b, c) and
+        (a + pi, pi - b, c + pi), and switches to the second once the free rotation passes 90 deg
+        (a scissor's crossing arms), which would read a satisfied equation as 180 deg off."""
+        r = np.asarray(self.mbs.GetObjectOutput(mj.index, self._exu.OutputVariableType.Rotation), dtype=float)
+        alt = np.array([r[0] + math.pi, math.pi - r[1], r[2] + math.pi])
+        wrap = lambda a: (a + math.pi) % (2 * math.pi) - math.pi  # noqa: E731
+        r, alt = wrap(r), wrap(alt)
+        free = {a - 3 for a in list(mj.drives) + mj.free_axes if a >= 3}
+        locked = [k for k in range(3) if k not in free]
+        return alt if sum(abs(alt[k]) for k in locked) < sum(abs(r[k]) for k in locked) else r
+
+    def check_redundant(self, time: Optional[float] = None) -> None:
+        """Measure the released equations; raise :class:`RedundantViolation` beyond the tolerance."""
+        lin_tol, ang_tol = self.redundant_tolerance
+        lin, ang = self.max_violation
+        worst = None
+        for name, axis, value in self.redundant_violation():
+            rot = axis.startswith("rot")
+            if rot:
+                ang = max(ang, abs(value))
+            else:
+                lin = max(lin, abs(value))
+            excess = abs(value) / (ang_tol if rot else lin_tol)
+            if excess > 1.0 and (worst is None or excess > worst[0]):
+                worst = (excess, name, axis, value)
+        self.max_violation = (lin, ang)
+        if worst is not None:
+            _, name, axis, value = worst
+            unit, tol = ("deg", ang_tol) if axis.startswith("rot") else ("m", lin_tol)
+            where = f" at t = {time:.4g} s" if time is not None else ""
+            raise RedundantViolation(
+                f"redundant violation{where}: released equation {name}.{axis} = {value:.4g} {unit} "
+                f"(tolerance {tol:g} {unit}) - the redundant constraints are incompatible (non-parallel "
+                "pin axes or misaligned joints), so the mechanism cannot move as built")
 
     def static_solution(self, steps: int = 10) -> Recording:
         """:meth:`solve_static` at the current drive targets as a one-sample recording."""
@@ -406,9 +479,14 @@ class MbdModel:
 
             mbs.SetObjectParameter(mj.index, "offsetUserFunction", offset)
         rec = self._recording(f"{self.root_path.rsplit('/', 1)[-1]}_dynamic")
-        state = {"next": 0.0}
+        state = {"next": 0.0, "violation": None}
 
         def sampler(mbs_, t):
+            try:  # every step, like RecurDyn's check; an exception cannot cross Exudyn's C++ loop
+                self.check_redundant(t)
+            except RedundantViolation as exc:
+                state["violation"] = exc
+                return False  # stops the time integration
             if t + 1e-12 >= state["next"]:
                 rec.add_sample(t, self.values())
                 state["next"] += sample
@@ -423,6 +501,9 @@ class MbdModel:
         ss.timeIntegration.generalizedAlpha.useIndex2Constraints = False
         ss.timeIntegration.generalizedAlpha.useNewmark = False
         mbs.SolveDynamic(ss, solverType=exu.DynamicSolverType.GeneralizedAlpha)
+        if state["violation"] is not None:
+            raise state["violation"]
+        self.check_redundant(end_time)
         rec.add_sample(end_time, self.values())
         return rec
 
@@ -462,8 +543,7 @@ class MbdModel:
             if len(axes) == 1:  # a single-DOF joint: position and axial force/torque
                 axis = axes[0]
                 if axis >= 3:
-                    rot = mbs.GetObjectOutput(mj.index, exu.OutputVariableType.Rotation)
-                    out[f"pos:{n}"] = math.degrees(float(rot[axis - 3]))
+                    out[f"pos:{n}"] = math.degrees(float(self._joint_rotation(mj)[axis - 3]))
                     out[f"force:{n}"] = float(torque[axis - 3])
                 else:
                     disp = mbs.GetObjectOutput(mj.index, exu.OutputVariableType.DisplacementLocal)
@@ -499,6 +579,10 @@ class MbdModel:
             lines.append("-> reactions over redundant load paths are not unique (totals are exact); "
                          "use redundancy='bushings' for a stiffness-based split")
             lines.append("released redundant equations: " + ", ".join(f"{j}.{a}" for j, a in self.released))
+            lin, ang = self.max_violation
+            lin_tol, ang_tol = self.redundant_tolerance
+            lines.append(f"redundant violation (largest so far): {lin:.3g} m, {ang:.3g} deg "
+                         f"(tolerance {lin_tol:g} m, {ang_tol:g} deg)")
         lines += [f"{what}: {', '.join(items)}" for what, items in self.notes.items()]
         return "\n".join(lines)
 

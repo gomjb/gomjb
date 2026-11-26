@@ -72,6 +72,12 @@ Isaac Sim의 `python.bat -m pip install exudyn==1.13.6` 으로 미리 설치하�
     **해제한 방정식 목록을 요약에 표시**합니다. 합력은 정확하고, 중복 경로 사이 분담은 여러 해 중 하나입니다.
   * `bushings`: 구동되지 않는 조인트를 강성 부싱(기본 1e8 N/m, 1e7 N·m/rad, 자유축 강성 0)으로 바꿉니다.
     Adams·Altair가 비대칭 반력의 해법으로 권장하는 방식으로, 분담이 강성에 따라 물리적으로 정해집니다.
+* **Redundant violation 검사** (RecurDyn의 같은 이름 검사): 해제한 방정식은 더 이상 강제되지 않으므로,
+  중복 구속이 서로 맞지 않으면(핀 축이 평행하지 않음, 조인트 어긋남) 그 틈이 해제한 식에 숨은 채 해가 나옵니다.
+  풀 때마다(정적, 스윕, 위치해석, 동적 해석의 매 스텝) 해제한 식의 값을 재고, 허용오차(기본 1e-6 m, 0.001°)를
+  넘으면 해석을 멈추고 어느 조인트의 어느 축인지 알립니다(RecurDyn 오류 C0276에 해당). 요약에는 지금까지의
+  최대값이 표시됩니다. 실측: 맞는 모델은 1e-15 m 수준이고, 3단 양쪽 시저에서 핀 하나의 축을 0.1° 기울이면
+  45°로 구동했을 때 숨은 틈이 96 mm입니다.
 
 **정확도 (오프라인 + Isaac Sim 6.1 Kit, 해석해와 비교)**
 
@@ -98,6 +104,8 @@ PhysX와 달리 루프를 닫는 조인트의 반력도 나오고, 결과가 시
 | Altair Inspire / MotionSolve | 중복 방정식을 제거하고, 제거된 자유도에는 반력이 없습니다. 유연 조인트를 권장합니다 | [Altair 도움말](https://help.altair.com/inspire/en_us/topics/inspire/motion/redundant_constraints_r.htm) |
 | Abaqus | 일관된 과구속은 가능하면 자동으로 제거하고 경고를 내며, 일관되지 않은 과구속은 오류로 처리합니다. 과구속은 부정확한 해나 수렴 실패를 일으킬 수 있고, 해가 나와도 반력이 부정확할 수 있습니다 | [Abaqus Overconstraint checks](https://abaqus-docs.mit.edu/2017/English/SIMACAECSTRefMap/simacst-c-overconstraintchecks.htm) |
 | RecurDyn | 상대좌표 순환 정식화를 쓰고, 폐루프는 컷 조인트와 라그랑주 승수로 닫습니다 | [Bae·Haug 계열 논문](https://www.bohrium.com/paper-details/a-recursive-formulation-for-flexible-multibody-dynamics-part-ii-closed-loop-systems/812414973014704128-3776), [Solver Theoretical Manual](https://www.scribd.com/doc/78016413/Recurdyn-Solver-Theoretical-Manual) |
+| RecurDyn | 중복 구속이 생기면 솔버가 자동으로 제거하고, 의도와 다른 결과가 나올 수 있다고 안내합니다. 가장 쉬운 해법으로 조인트 대신 부싱(자유축 강성 0, 나머지 큰 값, 예: 100,000 N/mm)을 권장합니다 | [FunctionBay FAQ 105](https://support.functionbay.com/en/faq/single/105/can-remove-redundant-constraints) |
+| RecurDyn | 중복 판정 허용오차(지정하지 않으면 1e-4). *Redundant Violation*: 제거한 구속의 값을 확인해 길이·각도 허용오차를 넘으면 시뮬레이션을 멈춥니다(음수면 중복 구속이 하나라도 있으면 정지). 관련 오류 C0113(맞지 않는 중복 구속에 의한 구속 위반), C0276(중복 구속 값이 허용오차 초과) | [Advanced Options](https://functionbay.com/documentation/onlinehelp/Documents/advancedoptions.htm), [오류 코드 목록](https://functionbay.com/documentation/onlinehelp/Documents/errorcodelistinrecurdynsolver.htm) |
 | Simcenter 3D Motion | 가변 스텝 BDF 적분을 씁니다(실시간 옵션은 고정 스텝 BDF) | [Siemens 지원 문서](https://support.sw.siemens.com/en-US/okba/KB000112713_EN_US/About-Simcenter-3D-Motion-Model-Export/index.html) |
 | Exudyn | 기본은 잉여(절대) 좌표 정식화이며, 최소좌표 `KinematicTree`도 지원합니다 | [Exudyn 문서](https://exudyn.readthedocs.io/) |
 | Exudyn | 자유도와 중복 구속은 `ComputeSystemDegreeOfFreedom`(numpy `matrix_rank` / SVD)으로 판별합니다. 특이 자코비안을 허용하는 `ignoreSingularJacobian`은 Eigen FullPivLU를 쓰며, 문서가 잘못된 결과가 나올 수 있다고 경고합니다 | Exudyn 1.13.6 소스 |
@@ -113,7 +121,8 @@ PhysX와 달리 루프를 닫는 조인트의 반력도 나오고, 결과가 시
 이 디자이너에 반영한 것:
 * `release` — Adams·MotionSolve·Abaqus처럼 중복 구속을 자동으로 해제합니다. 해제 내역을 알려주지 않는
   Adams·Simscape와 달리, 해제한 방정식 목록을 요약에 표시합니다. 해제된 방정식에는 반력이 없습니다(Altair와 같음).
-* `bushings` — Adams·Altair가 권장하는 대로 강성 부싱으로 분담을 구합니다. 실제 분담이 중요하면 실제 부품
+* Redundant violation 검사 — RecurDyn처럼 해제한 구속의 값을 매 해석마다 확인하고, 허용오차를 넘으면 멈춥니다.
+* `bushings` — Adams·Altair·RecurDyn이 권장하는 대로 강성 부싱으로 분담을 구합니다. 실제 분담이 중요하면 실제 부품
   강성을 넣으세요. 아주대 연구처럼 부품 자체를 유연체로 만드는 것이 더 정확하지만, 이 디자이너는 아직 강체만 다룹니다.
 
 ### 2.3 Kinematics (기구학 모드: 물리 / 운동표 / Co-Sim)
