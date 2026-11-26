@@ -22,7 +22,7 @@ Isaac Sim은 설치 폴더의 `extsUser`를 모든 앱에서 확장 경로로 �
 :: 작업 폴더(저장소): 처음 한 번만 클론
 git clone -b claude/isaac-sim-python-designer-dv3wt3 https://github.com/gomjb/gomjb.git C:\ws\isaac-sim-design
 set REPO=C:\ws\isaac-sim-design
-set ISAAC=E:\isaac-sim-standalone-6.1.0-windows-x86_64
+set ISAAC=C:\isaacsim
 mklink /J "%ISAAC%\extsUser\gomjb.physics_designer" "%REPO%\exts\gomjb.physics_designer"
 ```
 
@@ -397,7 +397,7 @@ Kit 내부 테스트(`gomjb/physics_designer/tests`: 실제 omni.ui 창, 조인�
 Isaac Sim 자체 확장 테스트와 같은 방식으로 실행합니다:
 
 ```bat
-set ISAAC=E:\isaac-sim-standalone-6.1.0-windows-x86_64
+set ISAAC=C:\isaacsim
 "%ISAAC%\kit\kit.exe" --empty --enable omni.kit.test --/exts/omni.kit.test/runTestsAndQuit=true ^
   --/exts/omni.kit.test/testExts/0=gomjb.physics_designer --/exts/omni.kit.test/testExts/1=gomjb.kinematics ^
   --/exts/omni.kit.test/testExtArgs/0=--no-window ^
