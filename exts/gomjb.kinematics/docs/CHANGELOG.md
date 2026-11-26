@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.1.3] - 2026-11-26
+### Added
+- Flipped-assembly check (`AssemblyFlip`): the enforced rotation equations of a joint also hold with
+  its axes anti-parallel (Adams documents the same for its JOINTs), so one large static step could
+  converge to the pose turned 180 deg and return it as a valid solution (measured: 0 -> 170 deg in
+  one step gave -10 deg). After every solved configuration, static and every dynamic step, an
+  enforced locked rotation axis or a driven one more than 90 deg from its target (motion values
+  during dynamics) stops the analysis and names the joint. Continuation reaches the same target.
+
+### Fixed
+- A static step that did not converge raised Exudyn 1.13's `SolverError` ("SolveStatic terminated
+  due to errors") instead of the solver's own message with the drive targets.
+
 ## [0.1.2] - 2026-11-26
 ### Added
 - Redundant violation check (RecurDyn's check of the same name, error C0276): a released redundant

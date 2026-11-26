@@ -415,3 +415,38 @@ def test_incompatible_redundancy_stops_the_dynamic_analysis(scene):
     model = MbdModel(scene, root)
     with pytest.raises(RedundantViolation, match=r"at t = "):
         model.simulate(1.0, step=1e-3)
+
+# -- flipped assembly (Adams: JOINTs only guarantee parallel or anti-parallel axes) ------------------
+def _hinged_link(scene):
+    _mechanism(scene, "M")
+    link = md.create_body(scene, "/World/M/Link", "link", (1.0, 0.05, 0.02), mass=2.0)
+    tf.set_world_position(link, (0.5, 0, 0))
+    spec = jt.JointSpec("revolute", name="Hinge", axis="Y", drive=jt.DriveSpec(stiffness=1e6))
+    jt.create_joint_at(scene, spec, None, link, location="custom", custom_position=(0, 0, 0), world_axis="Y",
+                       parent_path="/World/M/Joints")
+    return MbdModel(scene, "/World/M")
+
+
+def test_a_large_step_that_flips_the_assembly_is_stopped(scene):
+    """One static step from 0 to 170 deg converges to -10 deg: the enforced rotation equations hold for
+    the pose turned 180 deg as well. The check names the joint instead of returning that pose."""
+    from gomjb.kinematics.core.mbd import AssemblyFlip
+
+    model = _hinged_link(scene)
+    model.set_drive("Hinge", 170.0)
+    with pytest.raises(AssemblyFlip, match=r"joint Hinge driven rotY = -10 deg, target 170 deg"):
+        model.solve_static(steps=1)
+
+
+def test_continuation_reaches_the_same_target_without_a_flip(scene):
+    model = _hinged_link(scene)
+    model.set_drive("Hinge", 170.0)
+    assert model.solve_static(steps=10)["pos:Hinge"] == pytest.approx(170.0, abs=1e-6)
+
+
+def test_a_failed_static_step_names_the_drive_targets(scene):
+    """Exudyn 1.13 raises SolverError instead of returning False; the step reports the targets."""
+    model = _hinged_link(scene)
+    model.set_drive("Hinge", 90.0)
+    with pytest.raises(RuntimeError, match=r"did not converge at Hinge = 90 deg"):
+        model.solve_static(steps=1)

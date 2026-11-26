@@ -85,6 +85,10 @@ class RedundantViolation(RuntimeError):
     incompatible, so the model cannot move as built (RecurDyn: C0276)."""
 
 
+class AssemblyFlip(RuntimeError):
+    """The solution satisfies a joint with its axes anti-parallel: the pose turned 180 deg."""
+
+
 class MbdModel:
     """``redundancy``:
 
@@ -348,11 +352,16 @@ class MbdModel:
     def _static_step(self) -> None:
         exu = self._exu
         mbs = self.mbs
-        if not mbs.SolveStatic(self._settings()):
+        try:  # Exudyn 1.13 raises SolverError where older versions returned False
+            converged = mbs.SolveStatic(self._settings())
+        except exu.SolverError:
+            converged = False
+        if not converged:
             targets = ", ".join(f"{n} = {self.drive_value(n):.6g} {self.drive_unit(n)}" for n in self.drive_names)
             raise RuntimeError(f"static solution did not converge at {targets} (beyond the mechanism's range, "
                                "or a step too large for the continuation)")
         self.check_redundant()
+        self.check_assembly()
         current = mbs.systemData.GetODE2Coordinates(exu.ConfigurationType.Current)
         mbs.systemData.SetODE2Coordinates(current, exu.ConfigurationType.Initial)  # continuation
         self._last_target = {n: self.drive_value(n) for n in self.drive_names}
@@ -410,6 +419,34 @@ class MbdModel:
                 f"redundant violation{where}: released equation {name}.{axis} = {value:.4g} {unit} "
                 f"(tolerance {tol:g} {unit}) - the redundant constraints are incompatible (non-parallel "
                 "pin axes or misaligned joints), so the mechanism cannot move as built")
+
+    def check_assembly(self, time: Optional[float] = None, targets: Optional[Dict[str, float]] = None) -> None:
+        """Raise :class:`AssemblyFlip` when a joint is satisfied 180 deg off: its enforced rotation
+        equations hold for anti-parallel axes too (Adams documents the same for its JOINTs), so a
+        large step can converge to a flipped pose that looks like a valid solution. Flags an
+        enforced locked rotation axis, or a driven one away from its target, by more than 90 deg
+        (a flip is 180 deg; a converged equation is at round-off). ``targets``: joint name -> driven
+        rotation (rad) where it differs from the joint's drive target (a motion during dynamics)."""
+        for name, mj in self.joints.items():
+            if mj.bushing:
+                continue
+            rot = self._joint_rotation(mj)
+            for axis in range(3, 6):
+                if axis in mj.drives:
+                    target = (targets or {}).get(name, mj.drives[axis])
+                    off = (rot[axis - 3] - target + math.pi) % (2 * math.pi) - math.pi
+                    what = f"driven {AXIS_NAMES[axis]} = {math.degrees(rot[axis - 3]):.4g} deg, target " \
+                           f"{math.degrees(target):.4g} deg"
+                elif mj.constrained[axis]:
+                    off = rot[axis - 3]
+                    what = f"locked {AXIS_NAMES[axis]} = {math.degrees(off):.4g} deg"
+                else:
+                    continue
+                if abs(off) > math.pi / 2:
+                    where = f" at t = {time:.4g} s" if time is not None else ""
+                    raise AssemblyFlip(
+                        f"flipped assembly{where}: joint {name} {what} - the solution converged to the "
+                        "pose turned 180 deg (anti-parallel joint axes); move the drives in smaller steps")
 
     def static_solution(self, steps: int = 10) -> Recording:
         """:meth:`solve_static` at the current drive targets as a one-sample recording."""
@@ -480,11 +517,13 @@ class MbdModel:
             mbs.SetObjectParameter(mj.index, "offsetUserFunction", offset)
         rec = self._recording(f"{self.root_path.rsplit('/', 1)[-1]}_dynamic")
         state = {"next": 0.0, "violation": None}
+        rotary = {n: fn for n, fn in profiles.items() if next(iter(self.joints[n].drives)) >= 3}
 
         def sampler(mbs_, t):
             try:  # every step, like RecurDyn's check; an exception cannot cross Exudyn's C++ loop
                 self.check_redundant(t)
-            except RedundantViolation as exc:
+                self.check_assembly(t, {n: math.radians(fn(t)) for n, fn in rotary.items()})
+            except (RedundantViolation, AssemblyFlip) as exc:
                 state["violation"] = exc
                 return False  # stops the time integration
             if t + 1e-12 >= state["next"]:
@@ -504,6 +543,7 @@ class MbdModel:
         if state["violation"] is not None:
             raise state["violation"]
         self.check_redundant(end_time)
+        self.check_assembly(end_time, {n: math.radians(fn(end_time)) for n, fn in rotary.items()})
         rec.add_sample(end_time, self.values())
         return rec
 
