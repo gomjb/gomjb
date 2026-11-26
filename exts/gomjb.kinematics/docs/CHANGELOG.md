@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.1] - 2026-11-26
+### Added
+- Choosing a closed-loop mechanism in `physics` mode on GPU dynamics (Use selection), or applying
+  `physics` to it, notes in the status line that PhysX diverges on its loops there (Isaac Sim 6.1)
+  and advises `table` / `cosim`. Needs gomjb.physics_designer 0.10.3 (`validation.closed_loop_roots`).
+- README 2.3: GPU dynamics with closed-loop mechanisms.
+
 ## [0.1.0] - 2026-11-12
 ### Added
 - Split from gomjb.physics_designer 0.9.0 (its history covers what came before). It depends on that

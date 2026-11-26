@@ -1,5 +1,5 @@
 [package]
-version = "0.10.2"
+version = "0.10.3"
 title = "Physics Designer"
 description = "Python designer for Isaac Sim physics models: primitive body modeler with exact mass properties, move/align, snapping, anchors, joint creation with motions, bushings, physics properties, mechanism templates, setup validation and result recording (joint forces, plots, CSV) - all undoable. The exact solver and kinematic mechanisms are the gomjb.kinematics extension."
 category = "Simulation"

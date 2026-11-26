@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.10.3] - 2026-11-26
+### Changed
+- The GPU closed-loop warning is raised once per mechanism (its articulation root) instead of once
+  per scene, and points to the way to stay on the GPU: the Kinematics extension's `table` / `cosim`
+  modes, where the exact solver closes the loops and PhysX does not solve them. The auto-fix still
+  switches the scene to CPU dynamics. `validation.closed_loop_roots` lists the mechanisms PhysX
+  would solve with loops (mechanisms in a kinematic mode have their loop joints disabled).
+- READMEs: Isaac Sim lives in `C:\isaacsim` on the work machine; GPU guidance for closed loops.
+
 ## [0.10.2] - 2026-11-26
 ### Fixed
 - Bushing loop closures do not make PhysX GPU dynamics stable, contrary to 0.7.0. Measured in Isaac

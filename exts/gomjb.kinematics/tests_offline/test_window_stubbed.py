@@ -63,6 +63,28 @@ def test_ui_sources_are_ascii():
             assert line.isascii(), f"{path.name}:{n}: {line.strip()}"
 
 
+def test_closed_loop_on_gpu_is_pointed_to_a_kinematic_mode(env):
+    """Choosing a closed-loop mechanism on GPU dynamics advises 'table' / 'cosim'; an open chain or a
+    CPU scene gets no note."""
+    from pxr import Sdf
+
+    from gomjb.physics_designer.core import mechanisms as me
+    from gomjb.physics_designer.core import physics as ph
+
+    win, ctx, _ = env
+    lift = _lift(ctx.stage, stages=1, sides=1)["root"][0]
+    door = me.build_hinged_door(ctx.stage, origin=(0, 3.0, 0))["root"][0]
+    ctx.selection.paths = [lift + "/Platform"]
+    click("Use selection")
+    assert "kinematics: physics)" in status(win) and "GPU" not in status(win)  # the designer's scene: CPU
+    ph.find_physics_scene(ctx.stage).CreateAttribute(ph.GPU_DYNAMICS_ATTR, Sdf.ValueTypeNames.Bool).Set(True)
+    click("Use selection")
+    assert "closed loops on GPU dynamics" in status(win) and "'table' or 'cosim'" in status(win)
+    ctx.selection.paths = [door + "/Panel"]
+    click("Use selection")
+    assert "GPU" not in status(win)
+
+
 def test_every_button_runs_without_crashing(env):
     win, ctx, _ = env
     for w in list(kit_stubs._Widget.registry):

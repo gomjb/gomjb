@@ -75,17 +75,22 @@ def test_created_scene_runs_on_cpu(stage):
 @pytest.mark.parametrize("loop_closure", ["rigid", "bushing"])
 def test_gpu_dynamics_with_closed_loop_articulation_is_flagged(stage, loop_closure):
     """Measured in Isaac Sim 6.1: bushing loop closures go to NaN on the GPU exactly like rigid ones,
-    so both are flagged."""
+    so both are flagged - once per closed-loop mechanism, pointing to the kinematic modes."""
     from gomjb.physics_designer.core import mechanisms as me
 
-    me.build_scissor_lift(stage, loop_closure=loop_closure)
+    lifts = [me.build_scissor_lift(stage, loop_closure=loop_closure, origin=(3.0 * i, 0, 0))["root"][0]
+             for i in range(2)]
+    me.build_hinged_door(stage, origin=(0, 3.0, 0))  # an open chain: not flagged
     scene = UsdPhysics.Scene.Define(stage, "/World/PhysicsScene").GetPrim()  # PhysX default: GPU dynamics
     assert ph.uses_gpu_dynamics(scene)
+    assert sorted(str(r.GetPath()) for r in va.closed_loop_roots(stage)) == sorted(lifts)
     issues = va.validate(stage)
     gpu = [i for i in issues if i.fix == "cpu_dynamics"]
-    assert len(gpu) == 1 and gpu[0].path == "/World/PhysicsScene"
+    assert sorted(i.path for i in gpu) == sorted(lifts)
+    assert all("'table'" in i.message and "gomjb.kinematics" in i.message for i in gpu)
     assert not [i for i in issues if i.severity == va.ERROR], va.format_report(issues)
-    va.apply_fix(stage, gpu[0])
+    va.apply_fix(stage, gpu[0])  # the scene goes to the CPU: every mechanism is fine
+    assert not ph.uses_gpu_dynamics(scene)
     assert not [i for i in va.validate(stage) if i.fix == "cpu_dynamics"]
 
 

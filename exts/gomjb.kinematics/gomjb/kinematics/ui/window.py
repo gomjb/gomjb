@@ -151,9 +151,25 @@ class KinematicsWindow(ui.Window):
             root = km.mechanism_root_of(prim)
             if root is not None:
                 self._root.model.set_value(str(root.GetPath()))
-                self._status(f"Mechanism: {root.GetPath()} (kinematics: {km.get_mode(root)})")
+                self._status(f"Mechanism: {root.GetPath()} (kinematics: {km.get_mode(root)}){self._gpu_note(root)}")
                 return
         self._status("Select a prim inside a mechanism (articulation).", error=True)
+
+    @staticmethod
+    def _gpu_note(root: Usd.Prim) -> str:
+        """Advice for a closed-loop mechanism that PhysX would solve on GPU dynamics (the Physics
+        Designer's validation flags the same case): its loops diverge there, a kinematic mode does not."""
+        from gomjb.physics_designer.core import physics as ph
+        from gomjb.physics_designer.core import validation as va
+
+        stage = root.GetStage()
+        scene = ph.find_physics_scene(stage)
+        if scene is None or not ph.uses_gpu_dynamics(scene):
+            return ""
+        if root.GetPath() not in {r.GetPath() for r in va.closed_loop_roots(stage)}:
+            return ""
+        return (" - closed loops on GPU dynamics: PhysX diverges on them (Isaac Sim 6.1); "
+                "apply 'table' or 'cosim' to stay on the GPU")
 
     # -- kinematics ---------------------------------------------------------------------------
     def apply_kinematics(self):
@@ -179,7 +195,8 @@ class KinematicsWindow(ui.Window):
         except Exception as exc:
             self._status(f"Kinematics: {exc}", error=True)
             return
-        what = {"physics": "PhysX simulates its joints", "cosim": "exact solver every physics step"}.get(mode)
+        what = {"physics": "PhysX simulates its joints" + self._gpu_note(self._stage().GetPrimAtPath(path)),
+                "cosim": "exact solver every physics step"}.get(mode)
         if mode == "table":  # build it now (into the cache Play reads): its size and error show here
             from ..cache import table_cache
             from ..core import kinematics as kn

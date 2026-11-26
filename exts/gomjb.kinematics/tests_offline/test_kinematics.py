@@ -98,6 +98,24 @@ def test_kinematic_mechanism_validates_without_joint_warnings(lift):
     assert km.edit_paths(stage.GetPrimAtPath(root_path)) == [root_path]  # its joints live under the root
 
 
+@pytest.mark.parametrize("mode", ["table", "cosim"])
+def test_kinematic_mode_clears_the_gpu_closed_loop_warning(lift, mode):
+    """The Physics Designer flags a closed-loop mechanism on GPU dynamics and points here: in a
+    kinematic mode PhysX no longer solves its loops, so the warning goes and GPU dynamics stays."""
+    from gomjb.physics_designer.core import validation as va
+    from pxr import Sdf
+
+    stage, root_path = lift
+    scene = ph.find_physics_scene(stage)
+    scene.CreateAttribute(ph.GPU_DYNAMICS_ATTR, Sdf.ValueTypeNames.Bool).Set(True)
+    assert [i.path for i in va.validate(stage) if i.fix == "cpu_dynamics"] == [root_path]
+    km.set_mode(stage.GetPrimAtPath(root_path), mode)
+    assert not [i for i in va.validate(stage) if i.fix == "cpu_dynamics"]
+    assert ph.uses_gpu_dynamics(scene)
+    km.set_mode(stage.GetPrimAtPath(root_path), "physics")  # back to PhysX loops: flagged again
+    assert [i.path for i in va.validate(stage) if i.fix == "cpu_dynamics"] == [root_path]
+
+
 def test_copies_of_a_mechanism_share_one_group(stage):
     """Copies anywhere (and turned) group together; a different or edited copy does not."""
     from gomjb.physics_designer.core import math_utils as mu

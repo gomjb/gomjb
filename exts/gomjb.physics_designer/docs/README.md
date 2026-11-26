@@ -220,7 +220,8 @@ boundingCube·boundingSphere), 질량·밀도, 물리 머티리얼(정/동마찰
 
 *Physics scene* 버튼으로 만든 씬은 **CPU 물리(CPU dynamics + MBP broadphase)** 로 설정됩니다.
 Isaac Sim 6.1의 GPU 솔버에서는 폐루프 기구(시저)가 특정 조건에서 발산(NaN)하기 때문입니다(조건과 측정은
-6. 알려진 제한). CPU 솔버는 모든 경우에 정확했습니다.
+6. 알려진 제한). CPU 솔버는 모든 경우에 정확했습니다. GPU 물리가 필요하면 폐루프 기구를 Kinematics 확장의
+`table`·`cosim` 모드로 두세요.
 
 ### 2.6 Mechanism templates (메커니즘 템플릿)
 파라미터를 입력해 바로 시뮬레이션 가능한 기구를 생성합니다 (치수·질량·드라이브는 선택한 단위계, 각도는 deg).
@@ -264,7 +265,7 @@ Isaac Sim 6.1 실측 (3단, 팔 1.2 m, 20°, 목표 핀 높이 2.2 m):
 * articulation 밖에서 두 body를 잇는 조인트 (Newton이 거부)
 * articulation 안에서 월드에 직접 붙은 non-fixed 조인트 (PhysX는 월드-루트 사이에 fixed만 허용 → 그 DOF와 힘이
   articulation에서 빠짐. 월드에 고정한 베이스 링크를 두고 그 위에 조인트를 거세요)
-* GPU 물리 + 폐루프 articulation 조합(→ CPU 물리로 전환)
+* GPU 물리 + PhysX가 푸는 폐루프 기구 (기구마다 경고, 기구학 모드 `table`·`cosim` 안내 → 자동 수정은 CPU 물리로 전환)
 
 ### 2.8 Analysis (결과 기록·그래프)
 기구를 선택하고 *Use selection* → *Start recording* → Play 하면 **매 물리 스텝마다** articulation의 상태를
@@ -423,5 +424,12 @@ set ISAAC=C:\isaacsim
   * 재생 전에 넣어 둔 목표, 리밋·드라이브가 없는 진자만 함께 있는 씬, 루프가 없는 기구(실린더)는 GPU에서도 안정했습니다.
   * CPU는 모든 경우 안정했고, 상승량 오차는 1.1~1.3 mm(3단)였습니다.
 
-  디자이너가 만드는 씬은 CPU 물리를 쓰고, 검증기는 GPU 씬에 폐루프 articulation이 있으면 루프 닫힘의 종류와
-  관계없이 경고하고 CPU로 바꿔 줍니다.
+  **GPU에서 폐루프 기구를 돌리는 방법은 Kinematics 확장(`gomjb.kinematics`)의 기구학 모드입니다.**
+  기구를 `table`(운동표)이나 `cosim`으로 두면 정확해석기가 루프를 닫고, PhysX는 그 기구에 닿는 물체만 풉니다.
+  그래서 위 조건이 생기지 않습니다. GPU에서 1024개를 복제했을 때 `table`은 352 steps/s, 데크 오차 0.007 mm로
+  측정됐습니다(Kinematics README 2.3).
+  하중이 기구의 운동을 바꿔야 해서 PhysX가 루프를 풀어야 한다면 CPU 물리를 쓰세요.
+  디자이너가 만드는 씬은 CPU 물리가 기본입니다.
+  검증기는 GPU 씬에서 PhysX가 푸는 폐루프 기구를 **기구마다** 경고합니다. 루프 닫힘이 강체든 부싱이든 경고하고,
+  메시지에서 기구학 모드를 안내하며, 자동 수정은 씬을 CPU 물리로 바꿉니다.
+  기구학 모드인 기구는 루프 조인트가 꺼져 있어서 경고하지 않습니다.

@@ -131,6 +131,13 @@ kinematic body가 되어 정확해석기의 해(루프가 정확히 닫힌 위�
 물체(상자, 부품)만 풉니다. 루프 벌어짐과 처짐이 0이 되고, 남는 오차는 운동표의 보간 오차뿐입니다.
 모든 조인트(종속 조인트 포함)가 그 해를 따라 맞춰집니다.
 
+**GPU 물리에서 폐루프 기구를 돌릴 때는 이 모드를 쓰세요.** Isaac Sim 6.1의 PhysX GPU 솔버는 `physics` 모드의
+폐루프 기구를 발산시킵니다. 재생 중 드라이브 목표가 바뀌고, 같은 씬에 리밋이나 드라이브가 있는 다른
+articulation이 있으면 몇 스텝 안에 NaN이 됩니다(Physics Designer README 6). `table`·`cosim`에서는 PhysX가
+루프를 풀지 않아서 이 문제가 없습니다(아래 실측). Physics Designer 검증기는 GPU 씬에서 `physics` 모드인
+폐루프 기구를 경고합니다. 이 창에서 그런 기구를 고르거나 `physics`를 적용하면 상태 줄에
+`table`·`cosim`을 권하는 안내가 나옵니다.
+
 * 모델은 USD 하나입니다. 정확해석기가 USD의 body·조인트를 그대로 읽고(2.1), 모드를 바꾸면
   body를 kinematic으로, 기구 안쪽 조인트를 비활성으로, articulation root를 제거로 바꿉니다. 바꾼 것마다
   표시를 남기므로 `physics`로 되돌리면 모델이 원래대로 복원되고, 정확해석기는 kinematic 모드에서도

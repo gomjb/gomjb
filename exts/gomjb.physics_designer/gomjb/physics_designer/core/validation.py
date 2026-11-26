@@ -35,8 +35,10 @@ def _rigid_ancestor(prim: Usd.Prim) -> Optional[Usd.Prim]:
     return None
 
 
-def _has_closed_loop_articulation(stage: Usd.Stage) -> bool:
-    """A joint excluded from the articulation that still links two bodies of one articulation."""
+def closed_loop_roots(stage: Usd.Stage) -> List[Usd.Prim]:
+    """Articulation roots of closed-loop mechanisms: an enabled joint excluded from the
+    articulation that still links two bodies of the same articulation (a loop closure)."""
+    roots = {}
     for prim in stage.Traverse():
         j = UsdPhysics.Joint(prim) if prim.IsA(UsdPhysics.Joint) else None
         if j is None or not j.GetExcludeFromArticulationAttr().Get() or j.GetJointEnabledAttr().Get() is False:
@@ -45,8 +47,17 @@ def _has_closed_loop_articulation(stage: Usd.Stage) -> bool:
         if b0 is not None and b1 is not None:
             r0, r1 = ph.articulation_root_of(b0), ph.articulation_root_of(b1)
             if r0 is not None and r1 is not None and r0.GetPath() == r1.GetPath():
-                return True
-    return False
+                roots.setdefault(r0.GetPath(), r0)
+    return list(roots.values())
+
+
+GPU_CLOSED_LOOP = (
+    "Closed-loop mechanism on PhysX GPU dynamics: in Isaac Sim 6.1 the GPU solver goes to NaN within a few "
+    "steps of a drive target change on it when another articulation in the scene has a limited or driven "
+    "joint (rigid and bushing loop closures alike, whatever the solver type, iteration count or time step). "
+    "To stay on the GPU, run it as a kinematic mechanism: Kinematics window (gomjb.kinematics), mode 'table' "
+    "or 'cosim' - the exact solver closes the loops and PhysX simulates only what touches it. Otherwise use "
+    "CPU dynamics (auto-fix).")
 
 
 def _has_collider(prim: Usd.Prim) -> bool:
@@ -59,15 +70,9 @@ def validate(stage: Usd.Stage, pos_tol: float = 1e-3, rot_tol_deg: float = 0.5) 
     if not scenes:
         issues.append(Issue(WARNING, "/", "No PhysicsScene on the stage (Isaac Sim creates a default one, "
                                           "but gravity/solver settings are then implicit).", fix="add_scene"))
-    if _has_closed_loop_articulation(stage):
-        for scene in scenes:
-            if ph.uses_gpu_dynamics(scene):
-                issues.append(Issue(WARNING, str(scene.GetPath()),
-                                    "GPU dynamics with a closed-loop articulation: in Isaac Sim 6.1 the PhysX GPU "
-                                    "solver goes to NaN within a few steps of a drive target change on such a "
-                                    "mechanism when another articulation in the scene has a limited or driven "
-                                    "joint - with rigid and bushing loop closures alike, whatever the solver "
-                                    "type, iteration count or time step. Use CPU dynamics.", fix="cpu_dynamics"))
+    if any(ph.uses_gpu_dynamics(scene) for scene in scenes):
+        for root in closed_loop_roots(stage):
+            issues.append(Issue(WARNING, str(root.GetPath()), GPU_CLOSED_LOOP, fix="cpu_dynamics"))
 
     for prim in stage.Traverse():
         path = str(prim.GetPath())
@@ -170,8 +175,9 @@ def apply_fix(stage: Usd.Stage, issue: Issue) -> bool:
     if issue.fix == "convex_hull":
         UsdPhysics.MeshCollisionAPI.Apply(prim).CreateApproximationAttr().Set("convexHull")
         return True
-    if issue.fix == "cpu_dynamics":
-        ph.set_cpu_dynamics(prim)
+    if issue.fix == "cpu_dynamics":  # the issue names the mechanism; the setting is the scene's
+        for scene in [p for p in stage.Traverse() if p.IsA(UsdPhysics.Scene)]:
+            ph.set_cpu_dynamics(scene)
         return True
     return False
 
