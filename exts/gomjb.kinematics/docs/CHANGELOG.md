@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.1.5] - 2026-11-26
+### Fixed
+- Joint torques: Exudyn's `TorqueLocal` holds the multipliers of the rotation constraint equations,
+  whose order and signs depend on how many rotations are constrained (`CObjectJointGeneric`: three
+  -> z0.y1, z0.x1, x0.y1; two -> f0.l at the locked axes; one -> f1_0.f2_1). The fixed sign table
+  `TORQUE_SIGN` was right for three only: when redundancy release freed rotations of a driven pin
+  (every four-bar and slider-crank) the drive torque had the wrong sign, and undriven revolutes
+  reported permuted torque axes. The torque is now rebuilt as `sum_i lambda_i dg_i/dtheta_k` from
+  the same equations (`MbdModel._joint_reaction`).
+- Joint forces of a joint with released translations and a driven rotation are turned back from the
+  offset-rotated frame into J0.
+- Redundant violation false positive: a pin whose free axis is Rxyz's middle axis (y) is in gimbal
+  lock at +-90 deg, where Exudyn's `Rotation` gives an arbitrary x / z pair (-52 / -52 deg on a
+  satisfied crank pin), so `check_redundant` stopped a valid four-bar at 90 deg. A joint with one
+  rotational DOF is now measured without Euler angles: the twist about that axis (swing-twist) and
+  the tilt of the axis about each locked axis (`_joint_rotation`; `_euler_rotation` otherwise).
+- Joint angles are continuous past +-180 deg: a driven axis around its target, a free axis around
+  its last value (`restore()` resets that reference).
+
+### Added
+- `tests_offline/test_models.py`: four-bar crank-rocker (full turn, plane also turned about Z),
+  slider-crank (full turn), a pin driven 0 -> 350 deg, scissor lifts built folded and raised past a
+  90 deg crossing angle, a door hinge carrying its moment on the locked axes, and the released
+  equations of a crank pin in gimbal lock, against closed-form geometry and virtual work. Max errors:
+  angles 4e-6 deg, torques 7e-7 N*m, scissor actuator force 2e-7 relative.
+
 ## [0.1.4] - 2026-11-26
 ### Added
 - Joint limits are enforced by the exact solver as stops on the joint coordinate, Adams' BISTOP

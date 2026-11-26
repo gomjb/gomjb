@@ -57,7 +57,6 @@ from . import kinematic_mode as km
 
 AXIS_NAMES = ("transX", "transY", "transZ", "rotX", "rotY", "rotZ")
 MIMIC_APIS = ("PhysxMimicJointAPI", "NewtonMimicAPI")  # joint couplings the exact solver does not model
-TORQUE_SIGN = np.array([1.0, -1.0, -1.0])  # Exudyn TorqueLocal -> torque applied to body1 (see values())
 
 
 @dataclass
@@ -73,6 +72,9 @@ class MbdJoint:
     j0: np.ndarray = field(default_factory=lambda: np.eye(3))  # joint frame axes in marker 0's body frame
     body0: int = -1  # Exudyn object of marker 0's body, -1 = ground
     bushing: bool = False  # modelled as a stiff spring-damper instead of a constraint
+    last_angle: Optional[float] = None  # rad, the free rotation last reported (unwrap reference)
+    j1: np.ndarray = field(default_factory=lambda: np.eye(3))  # joint frame axes in marker 1's body frame
+    body1: int = -1  # Exudyn object of marker 1's body, -1 = ground
     limits: Optional[Tuple[float, float]] = None  # (lower, upper) of its single DOF: rad / stage units
 
 
@@ -293,6 +295,7 @@ class MbdModel:
         mj = MbdJoint(name, str(prim.GetPath()), prim.GetTypeName(), -1, list(constrained),
                       [a for a in free if a not in drives], drives, loop,
                       rotations[0], -1 if indices[0] == self._ground else int(indices[0]))
+        mj.j1, mj.body1 = rotations[1], -1 if indices[1] == self._ground else int(indices[1])
         if self.redundancy == "bushings" and not drives:
             from exudyn.utilities import ObjectConnectorRigidBodySpringDamper
 
@@ -325,6 +328,7 @@ class MbdModel:
         mj = MbdJoint(name, str(prim.GetPath()), "Bushing", -1, constrained,
                       [i for i in range(6) if not constrained[i]], {}, True,
                       rotations[0], -1 if indices[0] == self._ground else int(indices[0]), bushing=True)
+        mj.j1, mj.body1 = rotations[1], -1 if indices[1] == self._ground else int(indices[1])
         mj.index = int(self.mbs.AddObject(ObjectConnectorRigidBodySpringDamper(
             name=name, markerNumbers=markers, stiffness=np.diag(k), damping=np.diag(c),
             rotationMarker0=rotations[0], rotationMarker1=rotations[1], useIntrinsicFormulation=True,
@@ -445,6 +449,33 @@ class MbdModel:
         return out
 
     def _joint_rotation(self, mj: MbdJoint) -> np.ndarray:
+        """Relative rotation of a joint about its J0 axes (rad).
+
+        With one rotational DOF f (a pin, driven or free) it is measured without Euler angles:
+        the rotation about f is the twist of the relative rotation (swing-twist decomposition),
+        and each locked axis k the tilt of the f axis about k. Exudyn's Rxyz output is in gimbal
+        lock when f is its middle (y) axis at +-90 deg: x and z then come out as an arbitrary
+        pair (measured: (-52, -90, -52) deg on a satisfied pin), which a released-equation check
+        reads as a violation. Otherwise :meth:`_euler_rotation`."""
+        free = [a - 3 for a in list(mj.drives) + mj.free_axes if a >= 3]
+        if len(free) != 1:
+            return self._euler_rotation(mj)
+        f = free[0]
+        rel = self._frame(mj.body0, mj.j0).T @ self._frame(mj.body1, mj.j1)  # J1 axes in J0
+        out = np.zeros(3)
+        w, v = _quaternion(rel)
+        out[f] = _wrap(2.0 * math.atan2(v[f], w))
+        u = rel[:, f]  # where J1's f axis points, in J0
+        for k in range(3):
+            if k != f:
+                e = np.zeros(3)
+                e[k] = 1.0
+                ef = np.zeros(3)
+                ef[f] = 1.0
+                out[k] = math.atan2(u @ np.cross(e, ef), u @ ef)
+        return out
+
+    def _euler_rotation(self, mj: MbdJoint) -> np.ndarray:
         """Relative rotation of a joint as XYZ Tait-Bryan angles (rad), the branch that keeps its
         locked axes smallest. Exudyn reports one of the two equivalent triples, (a, b, c) and
         (a + pi, pi - b, c + pi), and switches to the second once the free rotation passes 90 deg
@@ -456,6 +487,77 @@ class MbdModel:
         free = {a - 3 for a in list(mj.drives) + mj.free_axes if a >= 3}
         locked = [k for k in range(3) if k not in free]
         return alt if sum(abs(alt[k]) for k in locked) < sum(abs(r[k]) for k in locked) else r
+
+    def _joint_angle(self, mj: MbdJoint, axis: int) -> float:
+        """Rotation about a single rotational DOF ``axis`` (3..5), rad, continuous past +-180 deg:
+        :meth:`_joint_rotation` (the right branch) unwrapped around the drive target for a driven
+        axis, around the angle last reported for a free one (reset by :meth:`restore`)."""
+        angle = float(self._joint_rotation(mj)[axis - 3])
+        ref = mj.drives.get(axis, mj.last_angle)
+        if ref is not None:
+            angle = ref + _wrap(angle - ref)
+        if axis not in mj.drives:
+            mj.last_angle = angle
+        return angle
+
+    def _frame(self, body: int, local: np.ndarray) -> np.ndarray:
+        """Global axes (columns) of a marker frame: the body's rotation times the joint frame in it."""
+        if body < 0:
+            return np.asarray(local)
+        rot = self.mbs.GetObjectOutputBody(body, self._exu.OutputVariableType.RotationMatrix,
+                                           localPosition=[0.0, 0.0, 0.0])
+        return np.asarray(rot).reshape(3, 3) @ np.asarray(local)
+
+    def _joint_reaction(self, mj: MbdJoint) -> Tuple[np.ndarray, np.ndarray]:
+        """(force, torque) a generic joint applies to marker 1's body, in J0 (stage units).
+
+        Exudyn's TorqueLocal is not a torque: it is the multipliers of the rotation constraint
+        equations, whose form depends on how many rotations are constrained (CObjectJointGeneric):
+        three -> z0.y1, z0.x1, x0.y1; two (revolute, free f) -> f0.l1, f0.l2 at the locked axes;
+        one (universal) -> f1_0.f2_1 at the locked axis. So the multipliers' order and signs change
+        with the constrained set, e.g. when redundancy release frees rotations of a driven pin
+        (every four-bar). The torque about each J0 axis is rebuilt as sum_i lambda_i * dg_i/dtheta_k,
+        theta_k a small rotation of marker 1 about that axis; with all three constrained this is
+        (l3, -l4, -l5), the former fixed sign table. ForceLocal is in J0 when all translations are
+        constrained; otherwise its equations are in J0 turned by the rotation offset (a driven
+        angle), turned back here."""
+        exu = self._exu
+        lam_f = np.asarray(self.mbs.GetObjectOutput(mj.index, exu.OutputVariableType.ForceLocal), dtype=float)
+        lam_t = np.asarray(self.mbs.GetObjectOutput(mj.index, exu.OutputVariableType.TorqueLocal), dtype=float)
+        a0 = self._frame(mj.body0, mj.j0)  # J0
+        a1 = self._frame(mj.body1, mj.j1)
+        off = np.eye(3)  # the rotation offset of the driven axes, as Exudyn applies it to J0
+        rot = self._joint_rotation(mj)
+        for axis in mj.drives:
+            if axis >= 3:
+                off = off @ _axis_rotation(axis - 3, float(rot[axis - 3]))
+        a0e = a0 @ off
+        rotc = [mj.constrained[3 + i] for i in range(3)]
+
+        def equations(b1: np.ndarray) -> np.ndarray:
+            g = np.zeros(3)
+            n = sum(rotc)
+            if n == 3:
+                g[:] = (a0e[:, 2] @ b1[:, 1], a0e[:, 2] @ b1[:, 0], a0e[:, 0] @ b1[:, 1])
+            elif n == 2:
+                f = rotc.index(0)
+                for lk in (i for i in range(3) if rotc[i]):
+                    g[lk] = a0e[:, f] @ b1[:, lk]
+            elif n == 1:
+                lk = rotc.index(1)
+                f1, f2 = (i for i in range(3) if i != lk)
+                g[lk] = a0e[:, f1] @ b1[:, f2]
+            return g
+
+        eps = 1e-7
+        torque = np.zeros(3)
+        for k in range(3):
+            dg = (equations(_rodrigues(a0[:, k], eps) @ a1) - equations(_rodrigues(a0[:, k], -eps) @ a1)) / (2 * eps)
+            torque[k] = sum(lam_t[i] * dg[i] for i in range(3) if rotc[i])
+        force = lam_f
+        if not all(mj.constrained[:3]) and not np.allclose(off, np.eye(3)):
+            force = off @ lam_f
+        return force, torque
 
     def check_redundant(self, time: Optional[float] = None) -> None:
         """Measure the released equations; raise :class:`RedundantViolation` beyond the tolerance."""
@@ -547,6 +649,8 @@ class MbdModel:
         """Make a configuration from :meth:`solution` current and the next solve's starting point."""
         for cfg in (self._exu.ConfigurationType.Initial, self._exu.ConfigurationType.Current):
             self.mbs.systemData.SetODE2Coordinates(list(coordinates), cfg)
+        for mj in self.joints.values():  # a jump: free angles are read without a reference again
+            mj.last_angle = None
 
     def motion_profiles(self) -> Dict[str, Callable[[float], float]]:
         """Joint name -> displacement f(t) [m or deg] of every driven joint that carries a motion."""
@@ -627,16 +731,14 @@ class MbdModel:
         out: Dict[str, float] = {}
         f_si, t_si, l_si = self.si["force"], self.si["torque"], self.si["length"]
         for n, mj in self.joints.items():
-            # In J0: ForceLocal is what the joint applies to marker 1's body; TorqueLocal holds the
-            # rotation-constraint multipliers, whose y and z components carry the opposite sign
-            # (measured on revolute joints about each J0 axis against static moment balance).
-            # Bushings (spring-dampers) report the force and torque on marker 0's body: negate.
-            force = np.asarray(mbs.GetObjectOutput(mj.index, exu.OutputVariableType.ForceLocal)) * f_si
-            torque = np.asarray(mbs.GetObjectOutput(mj.index, exu.OutputVariableType.TorqueLocal)) * t_si
+            # Force and torque the joint applies to marker 1's body, in J0. Bushings (spring-dampers)
+            # report them on marker 0's body: negate. Joints: see _joint_reaction.
             if mj.bushing:
-                force, torque = -force, -torque
+                force = -np.asarray(mbs.GetObjectOutput(mj.index, exu.OutputVariableType.ForceLocal)) * f_si
+                torque = -np.asarray(mbs.GetObjectOutput(mj.index, exu.OutputVariableType.TorqueLocal)) * t_si
             else:
-                torque = torque * TORQUE_SIGN
+                force, torque = self._joint_reaction(mj)
+                force, torque = force * f_si, torque * t_si
             for c, fc, tc in zip("xyz", force, torque):
                 out[f"joint_force:{n}:{c}"] = float(fc)
                 out[f"joint_torque:{n}:{c}"] = float(tc)
@@ -644,7 +746,7 @@ class MbdModel:
             if len(axes) == 1:  # a single-DOF joint: position and axial force/torque
                 axis = axes[0]
                 if axis >= 3:
-                    out[f"pos:{n}"] = math.degrees(float(self._joint_rotation(mj)[axis - 3]))
+                    out[f"pos:{n}"] = math.degrees(self._joint_angle(mj, axis))
                     out[f"force:{n}"] = float(torque[axis - 3])
                 else:
                     disp = mbs.GetObjectOutput(mj.index, exu.OutputVariableType.DisplacementLocal)
@@ -689,6 +791,48 @@ class MbdModel:
 
 
 # ---------------------------------------------------------------------------------------
+def _axis_rotation(k: int, angle: float) -> np.ndarray:
+    """Rotation matrix about coordinate axis k (column-vector convention, as Exudyn's RotXYZ)."""
+    c, s_ = math.cos(angle), math.sin(angle)
+    if k == 0:
+        return np.array([[1, 0, 0], [0, c, -s_], [0, s_, c]])
+    if k == 1:
+        return np.array([[c, 0, s_], [0, 1, 0], [-s_, 0, c]])
+    return np.array([[c, -s_, 0], [s_, c, 0], [0, 0, 1]])
+
+
+def _rodrigues(axis: np.ndarray, angle: float) -> np.ndarray:
+    """Rotation by ``angle`` about the unit vector ``axis``."""
+    k = np.asarray(axis, dtype=float)
+    K = np.array([[0, -k[2], k[1]], [k[2], 0, -k[0]], [-k[1], k[0], 0]])
+    return np.eye(3) + math.sin(angle) * K + (1 - math.cos(angle)) * K @ K
+
+
+def _quaternion(m: np.ndarray) -> Tuple[float, np.ndarray]:
+    """(w, (x, y, z)) of a rotation matrix (column-vector convention), w >= 0."""
+    t = float(np.trace(m))
+    if t > 0:
+        s_ = math.sqrt(t + 1.0) * 2
+        w, v = 0.25 * s_, np.array([m[2, 1] - m[1, 2], m[0, 2] - m[2, 0], m[1, 0] - m[0, 1]]) / s_
+    else:
+        i = int(np.argmax(np.diag(m)))
+        j, k = (i + 1) % 3, (i + 2) % 3
+        s_ = math.sqrt(max(1.0 + m[i, i] - m[j, j] - m[k, k], 0.0)) * 2
+        v = np.zeros(3)
+        v[i] = 0.25 * s_
+        v[j] = (m[j, i] + m[i, j]) / s_
+        v[k] = (m[k, i] + m[i, k]) / s_
+        w = (m[k, j] - m[j, k]) / s_
+    if w < 0:
+        w, v = -w, -v
+    return float(w), v
+
+
+def _wrap(a: float) -> float:
+    """Angle in [-pi, pi)."""
+    return (a + math.pi) % (2.0 * math.pi) - math.pi
+
+
 def _j0_values(values: Dict[int, float]) -> List[float]:
     """6-vector of drive values in the joint frame (J0): translations, then rotations."""
     out = [0.0] * 6
