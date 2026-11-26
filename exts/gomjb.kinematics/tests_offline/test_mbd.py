@@ -450,3 +450,56 @@ def test_a_failed_static_step_names_the_drive_targets(scene):
     model.set_drive("Hinge", 90.0)
     with pytest.raises(RuntimeError, match=r"did not converge at Hinge = 90 deg"):
         model.solve_static(steps=1)
+
+# -- joint limits as stops (Adams BISTOP on the joint coordinate, no contact geometry) --------------
+def _falling_link(scene):
+    """A 2 kg, 1 m link on an undriven revolute (axis Y) limited to +-10 deg: gravity turns it to +10."""
+    _mechanism(scene, "M")
+    link = md.create_body(scene, "/World/M/Link", "link", (1.0, 0.05, 0.02), mass=2.0)
+    tf.set_world_position(link, (0.5, 0, 0))
+    spec = jt.JointSpec("revolute", name="Hinge", axis="Y", lower=-10.0, upper=10.0)
+    jt.create_joint_at(scene, spec, None, link, location="custom", custom_position=(0, 0, 0), world_axis="Y",
+                       parent_path="/World/M/Joints")
+    return MbdModel(scene, "/World/M")
+
+
+def test_bistop_force():
+    from gomjb.kinematics.core.mbd import bistop
+
+    assert bistop(0.5, 3.0, 0.0, 1.0, 100.0, 2.2, 7.0, 0.1) == 0.0  # inside the range: no force
+    assert bistop(1.2, 0.0, 0.0, 1.0, 100.0, 2.2, 7.0, 0.1) == pytest.approx(-100.0 * 0.2 ** 2.2)
+    assert bistop(-0.2, 0.0, 0.0, 1.0, 100.0, 2.2, 7.0, 0.1) == pytest.approx(100.0 * 0.2 ** 2.2)
+    # damping ramps in over the first `depth` of penetration (no jump at the bound)
+    assert bistop(1.0 + 1e-9, 5.0, 0.0, 1.0, 100.0, 2.2, 7.0, 0.1) == pytest.approx(0.0, abs=1e-12)
+    assert bistop(1.3, 2.0, 0.0, 1.0, 100.0, 2.2, 7.0, 0.1) == pytest.approx(-100.0 * 0.3 ** 2.2 - 7.0 * 2.0)
+
+
+def test_revolute_limit_stops_a_falling_link(scene):
+    model = _falling_link(scene)
+    assert "Hinge" in model.notes["joint limits as stops (Adams BISTOP)"]
+    rec = model.simulate(2.0, step=1e-3)
+    final = rec.channels["pos:Hinge"][-1]
+    # it rests on the upper stop: in by less than the 0.01 deg the whole weight at full size would press
+    assert 10.0 < final < 10.01
+    assert max(rec.channels["pos:Hinge"]) < 10.5  # no overshoot through the stop
+
+
+def test_prismatic_limit_stops_a_falling_block(scene):
+    _mechanism(scene, "M")
+    block = md.create_body(scene, "/World/M/Block", "box", (0.2, 0.2, 0.2), mass=10.0)
+    spec = jt.JointSpec("prismatic", name="Slide", axis="Z", lower=-0.1, upper=0.1)
+    jt.create_joint_at(scene, spec, None, block, location="body1", world_axis="Z", parent_path="/World/M/Joints")
+    rec = MbdModel(scene, "/World/M").simulate(1.5, step=1e-3)
+    final = rec.channels["pos:Slide"][-1]
+    # on the lower stop: the block is the mechanism's whole weight, which by design presses 0.1 mm
+    assert final - (-0.1) == pytest.approx(-1e-4, rel=1e-3)
+    assert min(rec.channels["pos:Slide"]) > -0.101
+
+
+def test_drive_target_beyond_the_joint_limit_is_refused(scene):
+    res = me.build_scissor_lift(scene, stages=1, sides=1, angle=30.0, loop_closure="rigid")
+    model = MbdModel(scene, res["root"][0])
+    lower = me.scissor_slider_offset(1.2, 30.0, 75.0)  # the actuator's lower limit
+    model.set_drive("Actuator", lower)  # on the bound: allowed
+    with pytest.raises(ValueError, match=r"Actuator: drive target .* is beyond its joint limits"):
+        model.set_drive("Actuator", lower - 0.01)

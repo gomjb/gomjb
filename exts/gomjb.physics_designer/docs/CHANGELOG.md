@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.10.4] - 2026-11-26
+### Added
+- Kit test: the scissor lift driven 0.15 m past its range stops on its actuator joint limits
+  (75 deg end, within 2 mm, at rest) on PhysX, with no arm contact. README: the stroke is limited
+  by joint limits, not by contact between the arms.
+
 ## [0.10.3] - 2026-11-26
 ### Changed
 - The GPU closed-loop warning is raised once per mechanism (its articulation root) instead of once

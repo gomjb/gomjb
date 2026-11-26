@@ -101,6 +101,47 @@ class TestPhysicsDesignerWindow(omni.kit.test.AsyncTestCase):
         hinge = self.stage.GetPrimAtPath("/World/Arm/Joints/Hinge")
         self.assertAlmostEqual(UsdPhysics.DriveAPI(hinge, "angular").GetTargetPositionAttr().Get(), 0.0)  # Stop
 
+    async def test_scissor_stroke_ends_on_its_joint_limit(self):
+        """The actuators are driven past the lift's range: the actuator joint limits (no arm contact)
+        hold it at the 75 deg end of the stroke, still and at the exact kinematic height."""
+        import math
+
+        import omni.timeline
+
+        from ..commands import run_edit
+        from ..core import mechanisms as me
+        from ..core import motion as mo
+        from ..core import physics as ph
+
+        lower = me.scissor_slider_offset(1.2, 30.0, 75.0)  # the actuators' lower limit (m)
+
+        def build(stage):
+            ph.ensure_physics_scene(stage)
+            root = me.build_scissor_lift(stage, stages=2, angle=30.0)["root"][0]
+            for side in "LR":
+                mo.set_motion(stage.GetPrimAtPath(f"{root}/Joints/Actuator_{side}"),
+                              mo.Motion("displacement", f"STEP(TIME, 0, 0, 2, {lower - 0.15})"))
+            return root
+
+        root = run_edit(build)
+        analysis = self.window.analysis
+        analysis._root.model.set_value(root)
+        analysis.start()
+        timeline = omni.timeline.get_timeline_interface()
+        timeline.play()
+        for _ in range(240):  # STEP over 2 s past the limit, then hold
+            await omni.kit.app.get_app().next_update_async()
+        timeline.stop()
+        analysis.stop()
+        rec = analysis.recording
+        end = rec.time[-1]
+        self.assertGreater(end, 3.0)
+        for side in "LR":
+            pos = [rec.at(t, f"pos:Actuator_{side}") for t in (end - 0.5, end)]
+            self.assertTrue(all(math.isfinite(p) for p in pos), pos)
+            self.assertAlmostEqual(pos[-1], lower, delta=0.002)  # stopped by the limit, not the drive target
+            self.assertAlmostEqual(pos[0], pos[1], delta=5e-4)  # resting, not chattering on the stop
+
     async def test_every_template_builds_and_validates(self):
         for i, name in enumerate(self.window._tpl.items):
             self.window._tpl.widget.model.get_item_value_model().set_value(i)

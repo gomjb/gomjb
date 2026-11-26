@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.1.4] - 2026-11-26
+### Added
+- Joint limits are enforced by the exact solver as stops on the joint coordinate, Adams' BISTOP
+  (`bistop`): no force inside the range, beyond it `k * penetration^2.2` (Adams: an exponent of 1.0
+  is a corner) with damping ramped in over the penetration depth (Adams STEP), sized so the
+  mechanism's whole weight presses the stop in by `limit_penetration` (0.1 mm / 0.01 deg) and
+  critically damped there. Revolute limits use Exudyn's torsional spring-damper with continuous
+  rotation, prismatic ones its linear spring-damper; no contact geometry. Before, limits were not
+  enforced (listed as "joint limits not enforced").
+- A drive target beyond its joint's limits is refused: a prescribed motion cannot be stopped
+  (Adams does not allow BISTOP in a MOTION).
+
 ## [0.1.3] - 2026-11-26
 ### Added
 - Flipped-assembly check (`AssemblyFlip`): the enforced rotation equations of a joint also hold with

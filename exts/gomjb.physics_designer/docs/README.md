@@ -244,6 +244,11 @@ articulation** 이며, 조인트는 body0 = 부모, body1 = 자식입니다.
 그래서 트리는 articulation으로 만들고 **루프를 닫는 회전 핀만 `excludeFromArticulation`** 으로 뺐습니다.
 `loop_closure` 파라미터의 기본값은 `bushing`입니다. 이 경우 루프를 닫는 핀은 완성된 기구 기준으로
 강성을 자동 산정한 부싱이 됩니다. `rigid`를 쓰면 정확한 revolute 핀으로 닫으며, Newton에서는 이쪽을 써야 합니다.
+* **행정 끝은 조인트 리밋으로 막습니다.** 팔끼리 닿는 접촉은 쓰지 않으며, 팔 충돌체는 기본으로 꺼져 있습니다
+  (`arm_collision=False`). 액추에이터와 상부 슬라이더의 리밋이 4°~75° 범위입니다. 접촉보다 리밋이 안정적이고
+  빠릅니다. 1차원 조건 하나라서 충돌 형상, 접촉점, 관통 보정이 필요 없습니다.
+  실측(Isaac Sim 6.1, CPU): 액추에이터를 범위보다 0.15 m 더 구동해도 리밋(75°)에서 ±2 mm 안으로 멈추고 떨리지 않습니다.
+  정확해석기도 같은 리밋을 정지로 다룹니다(Kinematics README 2.1).
 * 하부 `Actuator_*` prismatic 드라이브의 target을 음수로 줄수록 리프트가 올라갑니다.
   `mechanisms.scissor_slider_offset_for_height()` 가 목표 핀 높이에 해당하는 target을 계산합니다.
 * 액추에이터 강성/감쇠는 하중과 기구 배율에서 자동 계산됩니다. `sag_tolerance`(기본 2 mm)는

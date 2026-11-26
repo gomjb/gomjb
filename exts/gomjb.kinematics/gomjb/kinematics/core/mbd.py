@@ -73,11 +73,14 @@ class MbdJoint:
     j0: np.ndarray = field(default_factory=lambda: np.eye(3))  # joint frame axes in marker 0's body frame
     body0: int = -1  # Exudyn object of marker 0's body, -1 = ground
     bushing: bool = False  # modelled as a stiff spring-damper instead of a constraint
+    limits: Optional[Tuple[float, float]] = None  # (lower, upper) of its single DOF: rad / stage units
 
 
 REDUNDANCY_MODES = ("release", "bushings")
 # released equations of a compatible model stay at round-off (1e-15 m); RecurDyn's default is 0.001
 REDUNDANT_TOLERANCE = (1.0e-6, 1.0e-3)  # m, deg
+LIMIT_PENETRATION = (1.0e-4, 0.01)  # m, deg: how deep the mechanism's whole weight presses a joint stop
+LIMIT_EXPONENT = 2.2  # Adams: an exponent of 1.0 makes a corner (non-smooth force)
 
 
 class RedundantViolation(RuntimeError):
@@ -108,7 +111,8 @@ class MbdModel:
 
     def __init__(self, stage: Usd.Stage, root_path: str, redundancy: str = "release",
                  bushing_stiffness: Tuple[float, float] = (1.0e8, 1.0e7), rigid_bushings: bool = False,
-                 redundant_tolerance: Tuple[float, float] = REDUNDANT_TOLERANCE):
+                 redundant_tolerance: Tuple[float, float] = REDUNDANT_TOLERANCE,
+                 limit_penetration: Tuple[float, float] = LIMIT_PENETRATION):
         import exudyn as exu
         from exudyn.utilities import MarkerBodyRigid, ObjectGround, ObjectJointGeneric, RigidBodyInertia
 
@@ -126,6 +130,7 @@ class MbdModel:
         self.notes: Dict[str, List[str]] = {}  # what the analysis leaves out -> the joints concerned
         self.released: List[Tuple[str, str]] = []
         self.redundant_tolerance = (float(redundant_tolerance[0]), float(redundant_tolerance[1]))
+        self.limit_penetration = (float(limit_penetration[0]), float(limit_penetration[1]))
         self.max_violation = (0.0, 0.0)  # largest |released equation| seen: m, deg
         self.joints: Dict[str, MbdJoint] = {}
         self.bodies: Dict[str, int] = {}
@@ -211,10 +216,64 @@ class MbdModel:
                 constrained[axis] = 1
             else:
                 self.notes.setdefault("damping-only drives ignored", []).append(name)
-        if _has_limits(prim):
-            self.notes.setdefault("joint limits not enforced", []).append(name)
         self._add_generic(prim, name, b0, b1, frame, constrained, free, drives,
                           bool(j.GetExcludeFromArticulationAttr().Get()), MarkerBodyRigid, ObjectJointGeneric)
+        limits = _limits(prim)
+        if limits is not None:
+            mj = self.joints[name]
+            mj.limits = limits
+            axis = free[0]
+            if axis in drives:  # a prescribed motion cannot be stopped (Adams: no BISTOP in a MOTION)
+                self._check_target(mj, drives[axis])
+            else:
+                self._add_stop(mj, axis, b0, b1, frame, MarkerBodyRigid)
+
+    def _add_stop(self, mj: MbdJoint, axis: int, b0, b1, frame: Gf.Matrix4d, MarkerBodyRigid) -> None:
+        """The joint's limits as a stop on its free coordinate, Adams' BISTOP: no force inside the
+        range, beyond it a penalty sized so the mechanism's whole weight presses the stop in by
+        ``limit_penetration``, exponent 2.2 (Adams: not 1.0, that is a corner), damping critical at
+        that depth and ramped in over it. A 1D force on the joint coordinate, so no contact geometry."""
+        from exudyn.utilities import NodeGenericData, ObjectConnectorLinearSpringDamper, ObjectConnectorTorsionalSpringDamper
+
+        from gomjb.physics_designer.core import bushing as bu
+
+        lin_pen, ang_pen = self.limit_penetration
+        ks = bu.auto_stiffness(self.stage, b0, b1, deflection=lin_pen, angle_deflection=ang_pen).in_stage_units(self.stage)
+        e = LIMIT_EXPONENT
+        lo, hi = mj.limits
+        markers, rotations, _ = self._markers(b0, b1, frame, MarkerBodyRigid)
+        if axis >= 3:
+            depth = math.radians(ang_pen)
+            k = ks.angular * ang_pen / depth ** e  # full-weight torque W*L at the penetration depth
+            c = math.degrees(ks.angular_damping) * math.sqrt(e)  # per rad, critical at that depth
+            to_z = _axis_to_z(axis - 3)
+            node = self.mbs.AddNode(NodeGenericData(initialCoordinates=[0.0], numberOfDataCoordinates=1))
+            self.mbs.AddObject(ObjectConnectorTorsionalSpringDamper(
+                name=f"{mj.name}_stop", markerNumbers=markers, nodeNumber=node, stiffness=0.0, damping=0.0,
+                rotationMarker0=rotations[0] @ to_z, rotationMarker1=rotations[1] @ to_z,
+                springTorqueUserFunction=lambda mbs_, t, item, x, v, *_: -bistop(x, v, lo, hi, k, e, c, depth)))
+        else:
+            depth = lin_pen / self.si["length"]
+            k = ks.linear * depth / depth ** e  # full weight W at the penetration depth
+            c = ks.linear_damping * math.sqrt(e)
+            self.mbs.AddObject(ObjectConnectorLinearSpringDamper(
+                name=f"{mj.name}_stop", markerNumbers=markers, stiffness=0.0, damping=0.0,
+                axisMarker0=list(rotations[0][:, axis]),
+                springForceUserFunction=lambda mbs_, t, item, x, v, *_: -bistop(x, v, lo, hi, k, e, c, depth)))
+        self.notes.setdefault("joint limits as stops (Adams BISTOP)", []).append(mj.name)
+
+    def _check_target(self, mj: MbdJoint, value: float) -> None:
+        """A driven joint's target (rad / stage units) must lie within its limits."""
+        if mj.limits is None:
+            return
+        lo, hi = mj.limits
+        slack = 1e-9 * max(1.0, abs(lo) if not math.isinf(lo) else 0.0, abs(hi) if not math.isinf(hi) else 0.0)
+        if lo - slack <= value <= hi + slack:
+            return
+        rot = next(iter(mj.drives)) >= 3
+        show = (lambda v: f"{math.degrees(v):.6g} deg") if rot else (lambda v: f"{v * self.si['length']:.6g} m")
+        raise ValueError(f"{mj.name}: drive target {show(value)} is beyond its joint limits [{show(lo)}, {show(hi)}] "
+                         "- a limit is a stop, a prescribed motion cannot pass it")
 
     def _markers(self, b0, b1, frame: Gf.Matrix4d, MarkerBodyRigid):
         """(marker numbers, joint-frame rotations in each body, Exudyn bodies) of a joint frame."""
@@ -313,7 +372,9 @@ class MbdModel:
         """Set a driven joint's target: metres for a linear axis, degrees for a rotation."""
         mj = self.joints[name]
         axis = next(iter(mj.drives))
-        mj.drives[axis] = math.radians(value_si) if axis >= 3 else value_si / self.si["length"]
+        value = math.radians(value_si) if axis >= 3 else value_si / self.si["length"]
+        self._check_target(mj, value)
+        mj.drives[axis] = value
         self.mbs.SetObjectParameter(mj.index, "offsetUserFunctionParameters", _j0_values(mj.drives))
 
     def drive_unit(self, name: str) -> str:
@@ -754,13 +815,47 @@ def _drive_axes(prim: Usd.Prim, free: List[int]):
                 yield i, AXIS_NAMES[i]
 
 
-def _has_limits(prim: Usd.Prim) -> bool:
+def _limits(prim: Usd.Prim) -> Optional[Tuple[float, float]]:
+    """(lower, upper) of a revolute (rad) or prismatic (stage units) joint; an absent or infinite
+    bound is -inf / inf. None when the joint has no finite limit."""
     for schema in (UsdPhysics.RevoluteJoint, UsdPhysics.PrismaticJoint):
         if prim.IsA(schema):
             typed = schema(prim)
-            lo, hi = typed.GetLowerLimitAttr().Get(), typed.GetUpperLimitAttr().Get()
-            return any(v is not None and not math.isinf(v) for v in (lo, hi))
-    return False
+            bounds = []
+            for value, inf in ((typed.GetLowerLimitAttr().Get(), -math.inf), (typed.GetUpperLimitAttr().Get(), math.inf)):
+                v = inf if value is None or math.isinf(value) else float(value)
+                bounds.append(math.radians(v) if schema is UsdPhysics.RevoluteJoint and not math.isinf(v) else v)
+            return tuple(bounds) if any(not math.isinf(b) for b in bounds) else None
+    return None
+
+
+def bistop(x: float, v: float, lower: float, upper: float, k: float, exponent: float, cmax: float,
+           depth: float) -> float:
+    """Adams' BISTOP force on a joint coordinate: zero inside [lower, upper]; beyond a bound a
+    penalty k * penetration^exponent pushes back, with damping ramped from 0 to ``cmax`` over the
+    first ``depth`` of penetration (Adams STEP) so the force has no jump. Positive = toward +x."""
+    if x < lower:
+        p = lower - x
+        return k * p ** exponent - _ramp(p, depth) * cmax * v
+    if x > upper:
+        p = x - upper
+        return -k * p ** exponent - _ramp(p, depth) * cmax * v
+    return 0.0
+
+
+def _ramp(p: float, depth: float) -> float:
+    """Adams STEP(p, 0, 0, depth, 1): cubic 0 -> 1 over [0, depth]."""
+    if p >= depth:
+        return 1.0
+    s = p / depth
+    return s * s * (3.0 - 2.0 * s)
+
+
+def _axis_to_z(axis: int) -> np.ndarray:
+    """Rotation (columns = new axes in the joint frame) whose z axis is joint axis 0/1/2, by a
+    cyclic permutation (right-handed): Exudyn's torsional spring acts about its frame's z."""
+    e = np.eye(3)
+    return np.column_stack([e[(axis + 1) % 3], e[(axis + 2) % 3], e[axis]])
 
 
 def _release_order(mj: MbdJoint) -> List[int]:
