@@ -217,10 +217,16 @@ GPU_DYNAMICS_ATTR = "physxScene:enableGPUDynamics"  # PhysxSchema fallback: True
 def set_cpu_dynamics(scene: Usd.Prim) -> None:
     """Run PhysX on the CPU (CPU dynamics + MBP broadphase).
 
-    Mechanism scenes are small but constraint-heavy; in Isaac Sim 6.1 the GPU solver diverged
-    when a closed-loop articulation (scissor lift) shared the scene with other articulations,
-    while the CPU solver stays exact.  Authored as plain PhysxSceneAPI attributes so it also
-    works with ``usd-core``, which ships without ``PhysxSchema``.
+    Measured in Isaac Sim 6.1 (RTX 5060 Ti): on GPU dynamics a closed-loop articulation (scissor
+    lift) goes to NaN within a few steps of a change of its drive target during Play when another
+    articulation in the scene has a limited or driven joint - with rigid and bushing loop closures
+    alike, whatever the solver type (TGS / PGS), position iteration count (64) or time step
+    (60 / 120 / 240 Hz), and whether the target is written through USD or the tensor API.  A target
+    authored before Play, a scene without such another articulation, and open-chain articulations
+    stay stable; the CPU solver stays exact in every case.
+
+    Authored as plain PhysxSceneAPI attributes so it also works with ``usd-core``, which ships
+    without ``PhysxSchema``.
     """
     scene.AddAppliedSchema("PhysxSceneAPI")
     scene.CreateAttribute(GPU_DYNAMICS_ATTR, Sdf.ValueTypeNames.Bool).Set(False)

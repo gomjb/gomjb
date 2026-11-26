@@ -402,8 +402,7 @@ def bushing_spec(free: Sequence[str] = ("rotZ",), linear_stiffness: float = 1.0e
                  collision_enabled: bool = False) -> JointSpec:
     """A bushing in place of a joint: a D6 spring-damper, stiff on the axes the joint would
     constrain and zero on its ``free`` axes (the Adams / RecurDyn bushing, and the soft loop
-    closure MuJoCo uses).  As a soft constraint it keeps PhysX GPU dynamics stable where a
-    rigid loop closure diverges, and redundant load paths split by stiffness.
+    closure MuJoCo uses).  Redundant load paths split by stiffness.
 
     Angular stiffness is per degree (PhysX drive convention).  Values are in the caller's
     units: stage units for :func:`create_joint`, SI when passed through :func:`spec_from_si`

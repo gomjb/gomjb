@@ -241,8 +241,8 @@ def build_scissor_lift(stage: Usd.Stage, name: str = "ScissorLift", origin: Leng
     the slider.
 
     ``loop_closure``: "bushing" (default) makes the loop-closing pins auto-sized bushings
-    (:mod:`bushing`: soft loop closures, which iterative / GPU solvers handle and which split
-    the load over the two sides by stiffness); "rigid" keeps them exact revolute joints.
+    (:mod:`bushing`: soft loop closures whose load split follows stiffness); "rigid" keeps them
+    exact revolute joints. Either way the lift needs CPU dynamics (:func:`physics.set_cpu_dynamics`).
     """
     if stages < 1:
         raise ValueError("stages must be >= 1")

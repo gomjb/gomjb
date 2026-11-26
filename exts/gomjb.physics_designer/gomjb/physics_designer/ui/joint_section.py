@@ -86,7 +86,7 @@ class JointSection:
                 ui.Separator(height=6)
                 hint("Joint model: a bushing is a 6-DOF spring-damper in place of the joint - stiff on the axes "
                      "the joint locks, zero on its free axes. Auto makes an undriven joint a bushing when it closes "
-                     "a loop (PhysX converges poorly on rigid loop closures, GPU worst). Stiffness is sized so the "
+                     "a loop, so the load over redundant paths splits by stiffness. Stiffness is sized so the "
                      "mechanism's whole weight deflects it by the tolerances; damping is critical. Driven joints "
                      "stay joints. Keep loops rigid for Newton (revolute loop closures only).")
                 self._model = ComboInput("Joint model", list(JOINT_MODELS))

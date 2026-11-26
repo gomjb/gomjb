@@ -2,10 +2,11 @@
 
 A bushing replaces a rigid joint by a 6-DOF spring-damper (a D6 joint whose locked axes are
 drives, see :func:`joints.bushing_spec`): stiff on the axes the joint constrains, zero on its free
-axes.  Rigid loop closures are what iterative solvers converge worst on (PhysX GPU diverged on a
-closed-loop articulation in Isaac Sim 6.1) and what makes reactions over redundant load paths
-non-unique; a bushing turns them into a soft constraint, as MuJoCo does for every constraint and
-Adams / RecurDyn recommend for over-constrained models.
+axes.  Rigid loop closures make reactions over redundant load paths non-unique; a bushing turns
+them into a soft constraint whose load split follows stiffness, as Adams / RecurDyn recommend for
+over-constrained models.  It does not make PhysX GPU dynamics stable: in Isaac Sim 6.1 a
+closed-loop articulation goes to NaN there with bushing loop closures exactly as with rigid ones
+(see :func:`physics.set_cpu_dynamics`).
 
 **Stiffness sizing** (:func:`auto_stiffness`), from the mechanism the joint belongs to:
 

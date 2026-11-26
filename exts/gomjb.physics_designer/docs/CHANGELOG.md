@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.10.2] - 2026-11-26
+### Fixed
+- Bushing loop closures do not make PhysX GPU dynamics stable, contrary to 0.7.0. Measured in Isaac
+  Sim 6.1 (RTX 5060 Ti): a closed-loop articulation goes to NaN within a few steps of a drive target
+  change during Play when another articulation in the scene has a limited or driven joint, with
+  rigid and bushing loops alike and whatever the solver type, iteration count, time step or target
+  write path (USD or tensor API). The GPU closed-loop warning now covers bushing loops again.
+- Removed the validation rule that suggested converting rigid loop closures to bushings for GPU
+  convergence, with its `bushing` auto-fix, and `test_bushing_scissor_on_gpu_dynamics`: it passed
+  only because its other articulation (a pendulum) had no limited or driven joint.
+- Docstrings, the Joints hint and the README state what bushings do (load split by stiffness) and
+  the measured GPU conditions.
+
 ## [0.10.1] - 2026-11-26
 ### Fixed
 - `test_bushing_scissor_on_gpu_dynamics` read the platform from USD, which keeps the authored pose
